@@ -6,6 +6,7 @@ import tomllib
 import traceback
 import threading
 import subprocess
+import signal
 from pathlib import Path
 
 from loguru import logger
@@ -126,6 +127,88 @@ def start_service_server(config):
         logger.error(traceback.format_exc())
         return None
 
+# 消息队列监听服务启动函数
+def start_mq_listener(config):
+    """
+    启动 mq_listener.py 消息队列监听服务
+    
+    Args:
+        config: 主配置文件，包含MessageQueue配置
+        
+    Returns:
+        subprocess.Popen对象：启动的进程
+    """
+    try:
+        global mq_listener_process
+        
+        # 从配置中获取MessageQueue配置
+        mq_config = config.get("MessageQueue", {})
+        mq_enabled = mq_config.get("enabled", True)
+        
+        if not mq_enabled:
+            logger.info("消息队列监听功能已禁用")
+            return None
+        
+        # 检查文件是否存在
+        mq_listener_path = Path("mq_listener.py")
+        if not mq_listener_path.exists():
+            logger.error(f"消息队列监听文件不存在: {mq_listener_path}")
+            return None
+        
+        logger.info("正在启动消息队列监听服务...")
+        
+        # 启动子进程，使用当前Python解释器
+        mq_listener_process = subprocess.Popen(
+            [sys.executable, str(mq_listener_path)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            bufsize=1,
+            universal_newlines=True  # 使用文本模式处理输出
+        )
+        
+        # 日志处理改为直接使用logger对象进行记录，不使用额外函数和级别区分
+        def log_reader():
+            # 合并stdout和stderr的输出，统一用info级别记录
+            import itertools
+            for line in itertools.chain(mq_listener_process.stdout, mq_listener_process.stderr):
+                if line.strip():
+                    logger.info(line.strip())
+        
+        # 只启动一个线程处理所有输出
+        threading.Thread(
+            target=log_reader,
+            daemon=True
+        ).start()
+        
+        logger.success(f"消息队列监听服务已启动，进程ID: {mq_listener_process.pid}")
+        return mq_listener_process
+    except Exception as e:
+        logger.error(f"启动消息队列监听服务时出错: {e}")
+        logger.error(traceback.format_exc())
+        return None
+
+def stop_mq_listener():
+    """停止消息队列监听服务"""
+    global mq_listener_process
+    
+    if mq_listener_process is not None:
+        try:
+            if mq_listener_process.poll() is None:  # 检查进程是否仍在运行
+                logger.info("正在关闭消息队列监听服务...")
+                # 尝试正常终止进程
+                mq_listener_process.terminate()
+                
+                # 等待进程结束，最多等待5秒
+                try:
+                    mq_listener_process.wait(timeout=5)
+                    logger.success("消息队列监听服务已正常关闭")
+                except subprocess.TimeoutExpired:
+                    # 如果超时，强制终止进程
+                    mq_listener_process.kill()
+                    logger.warning("消息队列监听服务已强制终止")
+        except Exception as e:
+            logger.error(f"关闭消息队列监听服务时出错: {e}")
+
 
 def is_api_message(record):
     return record["level"].name == "API"
@@ -178,6 +261,9 @@ async def main():
 
     # 启动serviceApi服务
     service_server_thread = start_service_server(config)
+    
+    # 启动消息队列监听服务
+    mq_listener_process = start_mq_listener(config)
 
     # 启动 linuxService - 现在已经在entrypoint.sh中启动
     # try:
@@ -228,6 +314,8 @@ async def main():
             logger.info("正在重启程序...")
             # 清理资源
             observer.stop()
+            # 停止消息队列监听服务
+            stop_mq_listener()
             try:
                 import multiprocessing.resource_tracker
                 multiprocessing.resource_tracker._resource_tracker.clear()
@@ -254,6 +342,8 @@ async def main():
             # 先停止监控
             observer.stop()
             observer.join()
+            # 停止消息队列监听服务
+            stop_mq_listener()
             # 调用清理函数
             cleanup()
         except Exception as e:
@@ -276,9 +366,13 @@ async def main():
 
         except KeyboardInterrupt:
             logger.info("收到终止信号，正在关闭...")
+            # 停止消息队列监听服务
+            stop_mq_listener()
         except Exception as e:
             logger.error(f"发生错误: {e}")
             logger.error(traceback.format_exc())
+            # 停止消息队列监听服务
+            stop_mq_listener()
             # 调用清理函数
             cleanup()
 
@@ -286,10 +380,17 @@ async def main():
 # 定义全局变量来存储linuxService进程
 # 在程序退出时关闭该进程
 linux_service_process = None
+mq_listener_process = None
 
 # 清理函数，在程序退出时调用
 def cleanup():
-    global linux_service_process
+    global linux_service_process, mq_listener_process
+    
+    # 关闭消息队列监听服务
+    if mq_listener_process is not None:
+        stop_mq_listener()
+    
+    # 关闭 linuxService 进程
     if linux_service_process is not None:
         try:
             logger.info("正在关闭 linuxService 进程...")
@@ -346,4 +447,22 @@ if __name__ == "__main__":
         diagnose=True,
     )
 
-    asyncio.run(main())
+    # 设置信号处理程序，确保在程序被终止时能够清理资源
+    def signal_handler(sig, frame):
+        logger.info(f"收到信号 {sig}，正在优雅退出...")
+        stop_mq_listener()
+        cleanup()
+        sys.exit(0)
+
+    # 注册信号处理程序
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("程序被用户中断")
+    finally:
+        # 确保在退出前清理资源
+        stop_mq_listener()
+        cleanup()

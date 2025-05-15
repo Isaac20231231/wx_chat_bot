@@ -375,8 +375,8 @@ class OpenAIAPI(PluginBase):
                 if len(self.user_sessions[session_key]) > self.max_context_messages:
                     self.user_sessions[session_key] = self.user_sessions[session_key][-self.max_context_messages:]
 
-                # 向群发送处理中提示
-                await client.send_at_message(room_id, f"\n正在思考中...", [from_id])
+                # # 向群发送处理中提示
+                # await client.send_at_message(room_id, f"\n正在思考中...", [from_id])
 
                 # 调用OpenAI API
                 response = await self._call_openai_api(self.user_sessions[session_key])
@@ -460,8 +460,8 @@ class OpenAIAPI(PluginBase):
                 if len(self.user_sessions[session_key]) > self.max_context_messages:
                     self.user_sessions[session_key] = self.user_sessions[session_key][-self.max_context_messages:]
 
-                # 向群发送处理中提示
-                await client.send_text_message(room_id, f"@{message.get('from_nick', '')} 正在思考中...")
+                # # 向群发送处理中提示
+                # await client.send_text_message(room_id, f"@{message.get('from_nick', '')} 正在思考中...")
 
                 # 调用OpenAI API
                 response = await self._call_openai_api(self.user_sessions[session_key])
@@ -544,9 +544,9 @@ class OpenAIAPI(PluginBase):
                     logger.debug(f"会话历史过长，裁剪到{self.max_context_messages}条消息")
                     self.user_sessions[session_key] = self.user_sessions[session_key][-self.max_context_messages:]
 
-                # 向用户发送处理中提示
-                logger.debug("发送'正在思考中'提示")
-                await client.send_text_message(from_id, "正在思考中...")
+                # # 向用户发送处理中提示
+                # logger.debug("发送'正在思考中'提示")
+                # await client.send_text_message(from_id, "正在思考中...")
 
                 # 调用OpenAI API
                 logger.debug("调用OpenAI API")
