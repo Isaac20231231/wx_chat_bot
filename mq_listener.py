@@ -133,7 +133,9 @@ class WXAdapter:
             "李叙洁": "wxid_s6g0b8zv0qx722",
             "黄嘉施": "wxid_1lf38uxmia6622",
             "毛怡燕": "maoyi1992",
-            "向金凯": "xiang_kai163"
+            "向金凯": "xiang_kai163",
+            "张小红": "wxid_303mwmsyg0se21",
+            "李有庆": "wxid_zsl4dhdlv2bd21"
             # 更多用户映射...
         }
 
