@@ -548,20 +548,32 @@ class XYBot:
             is_group=message["IsGroup"]
         )
 
-        if self.wxid in message.get("Ats", []):
+        # 检查是否为群聊消息且机器人被@
+        if message["IsGroup"] and self.wxid in message.get("Ats", []):
             logger.info("收到被@消息: 消息ID:{} 来自:{} 发送人:{} @:{} 内容:{}",
                         message.get("MsgId", ""), message["FromWxid"],
                         message["SenderWxid"], message["Ats"], message["Content"])
             if self.ignore_check(message["FromWxid"], message["SenderWxid"]):
                 if self.ignore_protection or not protector.check(14400):
+                    # 同时触发at_message和text_message事件，确保插件可以正常工作
                     await EventManager.emit("at_message", self.bot, message)
+                    await EventManager.emit("text_message", self.bot, message)
                 else:
                     logger.warning("风控保护: 新设备登录后4小时内请挂机")
             return
+        
+        # 检查是否为群聊消息但机器人未被@
+        elif message["IsGroup"]:
+            logger.info("收到群聊消息(未@机器人): 消息ID:{} 来自:{} 发送人:{} 内容:{} - 已忽略",
+                        message.get("MsgId", ""), message["FromWxid"],
+                        message["SenderWxid"], message["Content"])
+            # 群聊中未@机器人的消息不做任何处理，直接返回
+            return
 
-        logger.info("收到文本消息: 消息ID:{} 来自:{} 发送人:{} @:{} 内容:{}",
+        # 处理私聊消息（非群聊消息）
+        logger.info("收到私聊消息: 消息ID:{} 来自:{} 发送人:{} 内容:{}",
                     message.get("MsgId", ""), message["FromWxid"],
-                    message["SenderWxid"], message["Ats"], message["Content"])
+                    message["SenderWxid"], message["Content"])
 
         if self.ignore_check(message["FromWxid"], message["SenderWxid"]):
             if self.ignore_protection or not protector.check(14400):
@@ -684,6 +696,15 @@ class XYBot:
                 except Exception as e2:
                     logger.error(f"备用方法下载图片也失败: {e2}")
 
+        # 群聊消息：只有私聊或者群聊中被@才处理
+        if message["IsGroup"]:
+            # 群聊中的图片消息暂时不处理@检测，因为图片消息中通常没有@信息
+            # 但为了安全起见，群聊中的图片消息不做处理，避免机器人对所有图片都回应
+            logger.info("收到群聊图片消息: 消息ID:{} 来自:{} 发送人:{} - 已忽略",
+                        message.get("MsgId", ""), message["FromWxid"], message["SenderWxid"])
+            return
+
+        # 处理私聊图片消息
         if self.ignore_check(message["FromWxid"], message["SenderWxid"]):
             if self.ignore_protection or not protector.check(14400):
                 await EventManager.emit("image_message", self.bot, message)
@@ -744,6 +765,15 @@ class XYBot:
             silk_base64 = message.get("ImgBuf", {}).get("buffer", "")
             message["Content"] = await self.bot.silk_base64_to_wav_byte(silk_base64)
 
+        # 群聊消息：只有私聊或者群聊中被@才处理
+        if message["IsGroup"]:
+            # 群聊中的语音消息暂时不处理@检测，因为语音消息中通常没有@信息
+            # 但为了安全起见，群聊中的语音消息不做处理，避免机器人对所有语音都回应
+            logger.info("收到群聊语音消息: 消息ID:{} 来自:{} 发送人:{} - 已忽略",
+                        message.get("MsgId", ""), message["FromWxid"], message["SenderWxid"])
+            return
+
+        # 处理私聊语音消息
         if self.ignore_check(message["FromWxid"], message["SenderWxid"]):
             if self.ignore_protection or not protector.check(14400):
                 await EventManager.emit("voice_message", self.bot, message)
@@ -785,6 +815,15 @@ class XYBot:
             is_group=message["IsGroup"]
         )
 
+        # 群聊消息：只有私聊或者群聊中被@才处理
+        if message["IsGroup"]:
+            # 群聊中的表情消息暂时不处理@检测，因为表情消息中通常没有@信息
+            # 但为了安全起见，群聊中的表情消息不做处理，避免机器人对所有表情都回应
+            logger.info("收到群聊表情消息: 消息ID:{} 来自:{} 发送人:{} - 已忽略",
+                        message.get("MsgId", ""), message["FromWxid"], message["ActualUserWxid"])
+            return
+
+        # 处理私聊表情消息
         if self.ignore_check(message["FromWxid"], message["ActualUserWxid"]):
             if self.ignore_protection or not protector.check(14400):
                 await EventManager.emit("emoji_message", self.bot, message)
@@ -871,7 +910,15 @@ class XYBot:
         else:
             logger.info("未知的 XML 消息类型: {}, 完整内容: {}", type_value, message["Content"])
 
-        # 触发 xml_message 事件，无论 XML 类型如何
+        # 群聊消息：只有私聊或者群聊中被@才处理
+        if message["IsGroup"]:
+            # 群聊中的XML消息（如分享链接、文件等）暂时不处理@检测
+            # 但为了安全起见，群聊中的XML消息不做处理，避免机器人对所有分享都回应
+            logger.info("收到群聊XML消息: 消息ID:{} 来自:{} 发送人:{} - 已忽略",
+                        message.get("MsgId", ""), message["FromWxid"], message["SenderWxid"])
+            return
+
+        # 处理私聊XML消息，触发 xml_message 事件，无论 XML 类型如何
         if self.ignore_check(message["FromWxid"], message["SenderWxid"]):
             if self.ignore_protection or not protector.check(14400):
                 logger.debug("触发 xml_message 事件: 消息ID: {}", message.get("MsgId", ""))
@@ -949,6 +996,39 @@ class XYBot:
                     message.get("MsgId", ""), message["FromWxid"],
                     message["SenderWxid"], message["Content"], message["Quote"])
 
+        # 引用消息可能包含@信息，特殊处理
+        if message["IsGroup"]:
+            # 对于群聊中的引用消息，检查是否包含@信息
+            # 如果引用消息或当前消息中包含@机器人，则处理
+            try:
+                # 解析@信息
+                root = ET.fromstring(message.get("MsgSource", ""))
+                ats = root.find("atuserlist").text if root.find("atuserlist") is not None else ""
+                if ats:
+                    ats = ats.strip(",").split(",")
+                else:
+                    ats = []
+                
+                # 检查是否@了机器人
+                if self.wxid in ats:
+                    logger.info("收到群聊引用消息(已@机器人): 消息ID:{} 来自:{} 发送人:{} 内容:{} 引用:{}",
+                                message.get("MsgId", ""), message["FromWxid"],
+                                message["SenderWxid"], message["Content"], message["Quote"])
+                    if self.ignore_check(message["FromWxid"], message["SenderWxid"]):
+                        if self.ignore_protection or not protector.check(14400):
+                            await EventManager.emit("quote_message", self.bot, message)
+                        else:
+                            logger.warning("风控保护: 新设备登录后4小时内请挂机")
+                else:
+                    logger.info("收到群聊引用消息(未@机器人): 消息ID:{} 来自:{} 发送人:{} - 已忽略",
+                                message.get("MsgId", ""), message["FromWxid"], message["SenderWxid"])
+            except Exception as e:
+                logger.error("解析引用消息@信息失败: {}", e)
+                logger.info("收到群聊引用消息(解析失败): 消息ID:{} 来自:{} 发送人:{} - 已忽略",
+                            message.get("MsgId", ""), message["FromWxid"], message["SenderWxid"])
+            return
+
+        # 处理私聊引用消息
         if self.ignore_check(message["FromWxid"], message["SenderWxid"]):
             if self.ignore_protection or not protector.check(14400):
                 await EventManager.emit("quote_message", self.bot, message)
@@ -991,6 +1071,15 @@ class XYBot:
 
         message["Video"] = await self.bot.download_video(message.get("MsgId", 0))
 
+        # 群聊消息：只有私聊或者群聊中被@才处理
+        if message["IsGroup"]:
+            # 群聊中的视频消息暂时不处理@检测，因为视频消息中通常没有@信息
+            # 但为了安全起见，群聊中的视频消息不做处理，避免机器人对所有视频都回应
+            logger.info("收到群聊视频消息: 消息ID:{} 来自:{} 发送人:{} - 已忽略",
+                        message.get("MsgId", ""), message["FromWxid"], message["SenderWxid"])
+            return
+
+        # 处理私聊视频消息
         if self.ignore_check(message["FromWxid"], message["SenderWxid"]):
             if self.ignore_protection or not protector.check(14400):
                 await EventManager.emit("video_message", self.bot, message)
@@ -1026,6 +1115,15 @@ class XYBot:
 
         message["File"] = await self.bot.download_attach(attach_id)
 
+        # 群聊消息：只有私聊或者群聊中被@才处理
+        if message["IsGroup"]:
+            # 群聊中的文件消息暂时不处理@检测，因为文件消息中通常没有@信息
+            # 但为了安全起见，群聊中的文件消息不做处理，避免机器人对所有文件都回应
+            logger.info("收到群聊文件消息: 消息ID:{} 来自:{} 发送人:{} 文件名:{} - 已忽略",
+                        message.get("MsgId", ""), message["FromWxid"], message["SenderWxid"], message.get("Filename", ""))
+            return
+
+        # 处理私聊文件消息
         if self.ignore_check(message["FromWxid"], message["SenderWxid"]):
             if self.ignore_protection or not protector.check(14400):
                 await EventManager.emit("file_message", self.bot, message)
@@ -1067,6 +1165,15 @@ class XYBot:
             pass
         else:
             logger.info("收到系统消息: {}, 完整内容: {}", message, message["Content"])
+            # 群聊消息：只有私聊或者群聊中被@才处理
+            if message["IsGroup"]:
+                # 群聊中的系统消息暂时不处理@检测，因为系统消息中通常没有@信息
+                # 但为了安全起见，群聊中的系统消息不做处理，避免机器人对所有系统消息都回应
+                logger.info("收到群聊系统消息: 消息ID:{} 来自:{} 发送人:{} - 已忽略",
+                            message.get("MsgId", ""), message["FromWxid"], message["SenderWxid"])
+                return
+
+            # 处理私聊系统消息
             if self.ignore_check(message["FromWxid"], message["SenderWxid"]):
                 if self.ignore_protection or not protector.check(14400):
                     await EventManager.emit("system_message", self.bot, message)
@@ -1103,6 +1210,16 @@ class XYBot:
             is_group=message["IsGroup"]
         )
 
+        # 群聊消息：只有私聊或者群聊中被@才处理
+        if message["IsGroup"]:
+            # 群聊中的拍一拍消息暂时不处理@检测，因为拍一拍消息中通常没有@信息
+            # 但为了安全起见，群聊中的拍一拍消息不做处理，避免机器人对所有拍一拍都回应
+            logger.info("收到群聊拍一拍消息: 消息ID:{} 来自:{} 发送人:{} 拍者:{} 被拍:{} - 已忽略",
+                        message.get("MsgId", ""), message["FromWxid"], message["SenderWxid"], 
+                        message.get("Patter", ""), message.get("Patted", ""))
+            return
+
+        # 处理私聊拍一拍消息
         if self.ignore_check(message["FromWxid"], message["SenderWxid"]):
             if self.ignore_protection or not protector.check(14400):
                 await EventManager.emit("pat_message", self.bot, message)

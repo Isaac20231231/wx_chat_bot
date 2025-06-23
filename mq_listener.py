@@ -89,9 +89,6 @@ class WXAdapter:
         self.groups_cache = {}  # 群聊wxid缓存
         self.members_cache = {}  # 群成员wxid缓存
 
-        # 初始化手动映射表
-        self._init_manual_mapping()
-
         # 从数据库直接获取当前登录的微信号
         self.my_wxid = 'wxid_nmoq1pfooveu12'
         if not self.my_wxid:
@@ -100,70 +97,24 @@ class WXAdapter:
 
         logger.info(f"当前登录微信号: {self.my_wxid}")
 
-        # 获取可用方法列表用于调试
-        self._get_available_methods()
+        # 延迟加载缓存，避免初始化时线程问题
+        logger.info("WXAdapter初始化完成，将在后台异步加载缓存")
 
-        # 初始化时尝试获取好友和群聊列表
-        self.refresh_cache()
-
-        # 启动定时刷新缓存线程
+        # 启动定时刷新缓存线程，第一次会自动加载缓存
         self._start_auto_refresh()
 
-    def _init_manual_mapping(self):
-        """初始化手动映射表"""
-        # 用户映射表
-        self.user_mapping = {
-            "朱欣园": "wxid_a2osv6hgqm2i22",
-            "王鑫勤": "wxid_x9dchbcdhql921",
-            "陈佳莹": "wxid_ld8l5dmp3m4421",
-            "徐梦圆": "wxid_wl0lcqr48pso11",
-            "刘尧": "wxid_o95guka3ip4712",
-            "吴丹丹": "wxid_ju92hrjst7tu12",
-            "金思涵": "wxid_xpwiv4vmyj9722",
-            "罗晓彤": "a1137161419",
-            "厉巧云": "lqy_962464",
-            "戴婕": "wxid_9noyjoj7znzz22",
-            "傅莹莹": "wxid_c4qglt261sxe22",
-            "林雪飞": "wxid_p87myd7tfcat22",
-            "陈玲玲": "chenlingling6048",
-            "赵浩然": "lekey22",
-            "陈嘉赢": "chenjiay_490986969",
-            "刘非凡": "wxid_vom8gnhayr2o11",
-            "余本鑫": "wxid_oqu2t4xtckug22",
-            "李叙洁": "wxid_s6g0b8zv0qx722",
-            "黄嘉施": "wxid_1lf38uxmia6622",
-            "毛怡燕": "maoyi1992",
-            "向金凯": "xiang_kai163",
-            "张小红": "wxid_303mwmsyg0se21",
-            "李有庆": "wxid_zsl4dhdlv2bd21"
-            # 更多用户映射...
-        }
 
-        # 群聊映射表
-        self.group_mapping = {
-            "测试群": "43256124689@chatroom",
-            "测试发送消息": "52324230765@chatroom",
-            "欧盟通知群": "58103688366@chatroom",
-            "北美通知群": "57000892820@chatroom",
-            "Web性能监控群": "53068513019@chatroom",
-            "自动化通知群": "49629678176@chatroom",
-            "幸福一家人👨‍👩‍👧‍👧": "6872717936@chatroom",
-            "Costway IT大家庭": "47881484208@chatroom"
-            # 更多群聊映射...
-        }
-
-        # 将映射表同步到缓存
-        self.friends_cache.update(self.user_mapping)
-        self.groups_cache.update(self.group_mapping)
-
-        logger.info(f"已初始化手动映射表 - 用户: {len(self.user_mapping)}个, 群聊: {len(self.group_mapping)}个")
 
     def _get_my_wxid_from_db(self):
         """从数据库获取当前登录的微信号"""
         try:
-            # 尝试连接到我的信息数据库
-            conn = self.wx_client.get_contacts_db()
-            if conn:
+            # 直接使用数据库路径创建新连接，避免线程安全问题
+            import sqlite3
+            db_path = os.path.join("database", "contacts.db")
+            
+            if os.path.exists(db_path):
+                # 每次都创建新的连接，确保线程安全
+                conn = sqlite3.connect(db_path)
                 cursor = conn.cursor()
 
                 # 查询我的微信号信息
@@ -171,6 +122,7 @@ class WXAdapter:
                 result = cursor.fetchone()
 
                 if result and result[0]:
+                    conn.close()
                     return result[0]
 
                 # 如果上面的查询失败，尝试另一种方式
@@ -178,13 +130,15 @@ class WXAdapter:
                 result = cursor.fetchone()
 
                 if result and result[0]:
+                    conn.close()
                     return result[0]
 
+                conn.close()
                 # 如果以上方法都失败，返回一个默认值或空字符串
                 logger.warning("无法从数据库获取微信号，将使用空字符串")
                 return ""
             else:
-                logger.error("无法连接到数据库")
+                logger.error(f"联系人数据库文件不存在: {db_path}")
                 return ""
         except Exception as e:
             logger.error(f"从数据库获取微信号时发生异常: {e}")
@@ -208,23 +162,7 @@ class WXAdapter:
         except Exception as e:
             logger.error(f"通过API获取wxid时出错: {e}")
 
-    def _get_available_methods(self):
-        """获取可用的API方法列表用于调试"""
-        try:
-            all_methods = [method for method in dir(self.wx_client) if not method.startswith('_')]
-            contact_methods = [method for method in all_methods if 'contact' in method.lower()]
-            friend_methods = [method for method in all_methods if 'friend' in method.lower()]
-            room_methods = [method for method in all_methods if
-                            'room' in method.lower() or 'chatroom' in method.lower()]
-            message_methods = [method for method in all_methods if
-                               'message' in method.lower() or 'msg' in method.lower() or 'send' in method.lower()]
 
-            logger.info(f"联系人相关方法: {contact_methods}")
-            logger.info(f"好友相关方法: {friend_methods}")
-            logger.info(f"群聊相关方法: {room_methods}")
-            logger.info(f"消息相关方法: {message_methods}")
-        except Exception as e:
-            logger.error(f"获取可用方法时发生异常: {e}")
 
     def refresh_cache(self):
         """刷新好友和群聊缓存"""
@@ -235,388 +173,173 @@ class WXAdapter:
             # 获取群聊列表
             self._update_groups_cache()
 
-            logger.info("成功刷新好友和群聊缓存")
+            # 记录缓存状态
+            friends_count = len(self.friends_cache)
+            groups_count = len(self.groups_cache)
+            
+            logger.info(f"成功刷新好友和群聊缓存 - 好友: {friends_count}个, 群聊: {groups_count}个")
+            logger.info(f"好友缓存示例: {list(self.friends_cache.keys())[:5]}")
+            logger.info(f"群聊缓存示例: {list(self.groups_cache.keys())[:5]}")
         except Exception as e:
             logger.error(f"刷新缓存失败: {e}")
 
     def _update_friends_cache(self):
-        """更新好友缓存，采用先获取列表再获取详情的标准流程"""
+        """更新好友缓存，直接从数据库获取"""
         try:
-            # 1. 先调用GetContractList获取所有联系人wxid
-            url = f'http://{self.api_ip}:{self.api_port}/VXAPI/Friend/GetContractList'
-            json_param = {
-                "Wxid": self.my_wxid,
-                "CurrentWxcontactSeq": 0,
-                "CurrentChatroomContactSeq": 0
-            }
-            response = requests.post(url, json=json_param, timeout=10)
-
-            if response.status_code == 200:
-                result = response.json()
-                if result.get("Success"):
-                    logger.info("成功获取联系人列表")
-                    # 筛选个人联系人wxid
-                    contact_list = []
-                    for contact in result.get("Data", {}).get("ContactList", []):
-                        if isinstance(contact, dict) and "@chatroom" not in contact.get("UserName", ""):
-                            contact_list.append(contact.get("UserName"))
-
-                    logger.info(f"筛选出 {len(contact_list)} 个非群聊联系人")
-
-                    # 2. 调用GetContractDetail获取联系人详情
-                    if contact_list:
-                        # 由于可能联系人较多，分批获取详情
-                        batch_size = 20  # 每次请求最多20个联系人
-                        count = 0
-
-                        for i in range(0, len(contact_list), batch_size):
-                            batch = contact_list[i:i + batch_size]
-
-                            url = f'http://{self.api_ip}:{self.api_port}/VXAPI/Friend/GetContractDetail'
-                            json_param = {"Wxid": self.my_wxid, "Towxids": ",".join(batch), "Chatroom": ""}
-                            response = requests.post(url, json=json_param, timeout=10)
-
-                            if response.status_code == 200:
-                                details = response.json()
-                                if details.get("Success"):
-                                    # 3. 更新缓存
-                                    for contact in details.get("Data", {}).get("ContactList", []):
-                                        wxid = contact.get("UserName")
-                                        # 处理不同格式的昵称和备注
-                                        nickname = ""
-                                        remark = ""
-
-                                        if "NickName" in contact:
-                                            if isinstance(contact["NickName"], dict) and "string" in contact[
-                                                "NickName"]:
-                                                nickname = contact["NickName"]["string"]
-                                            elif isinstance(contact["NickName"], str):
-                                                nickname = contact["NickName"]
-
-                                        if "RemarkName" in contact:
-                                            if isinstance(contact["RemarkName"], dict) and "string" in contact[
-                                                "RemarkName"]:
-                                                remark = contact["RemarkName"]["string"]
-                                            elif isinstance(contact["RemarkName"], str):
-                                                remark = contact["RemarkName"]
-
-                                        if wxid and (nickname or remark):
-                                            if nickname:
-                                                self.friends_cache[nickname] = wxid
-                                                count += 1
-                                            if remark:
-                                                self.friends_cache[remark] = wxid
-                                                if not nickname:  # 只有在没有昵称时才计数备注
-                                                    count += 1
-                                else:
-                                    logger.error(f"获取联系人详情失败: {details.get('Message', '未知错误')}")
-                            else:
-                                logger.error(f"调用GetContractDetail失败，状态码: {response.status_code}")
-
-                        logger.info(f"更新好友缓存完成，共 {count} 个联系人")
-                    else:
-                        logger.warning("没有找到个人联系人")
-                else:
-                    logger.error(f"获取联系人列表失败: {result.get('Message', '未知错误')}")
-                    # 使用备选方法
-                    self._load_friends_from_db()
-            else:
-                logger.error(f"调用GetContractList失败，状态码: {response.status_code}")
-                # 使用备选方法
-                self._load_friends_from_db()
-        except Exception as e:
-            logger.error(f"更新好友缓存时发生异常: {e}")
-            # 使用备选方法
-            self._load_friends_from_db()
-
-    def _load_friends_from_db(self):
-        """从数据库加载好友信息"""
-        try:
-            conn = self.wx_client.get_contacts_db()
-            if conn:
+            logger.info("开始从数据库更新好友缓存")
+            
+            # 直接使用数据库路径创建新连接，避免线程安全问题
+            import sqlite3
+            db_path = os.path.join("database", "contacts.db")
+            
+            if os.path.exists(db_path):
+                # 每次都创建新的连接，确保线程安全
+                conn = sqlite3.connect(db_path)
                 cursor = conn.cursor()
-
-                # 查询个人联系人信息
+                
+                # 查询所有非群聊联系人（type != 'group' 和 wxid不包含@chatroom）
                 cursor.execute("""
                 SELECT wxid, nickname, remark FROM contacts 
-                WHERE wxid NOT LIKE '%@chatroom' AND nickname IS NOT NULL
+                WHERE type != 'group' AND wxid NOT LIKE '%@chatroom' 
+                AND wxid IS NOT NULL AND wxid != ''
                 """)
-
+                
                 rows = cursor.fetchall()
-
                 count = 0
+                
+                for row in rows:
+                    wxid = row[0]
+                    nickname = row[1] or ""
+                    remark = row[2] or ""
+                    
+                    # 添加昵称到缓存
+                    if nickname:
+                        self.friends_cache[nickname] = wxid
+                        count += 1
+                    
+                    # 添加备注到缓存
+                    if remark and remark != nickname:
+                        self.friends_cache[remark] = wxid
+                        if not nickname:  # 如果没有昵称，才计数备注
+                            count += 1
+                
+                conn.close()
+                logger.info(f"从数据库加载了 {count} 个好友信息")
+                
+                # 记录数据库中的联系人数量
+                if count < 10:  
+                    logger.warning(f"数据库中联系人较少，仅有{count}个，可能需要更新数据库")
+                    
+            else:
+                logger.error(f"联系人数据库文件不存在: {db_path}")
+                
+        except Exception as e:
+            logger.error(f"从数据库更新好友缓存失败: {e}")
+
+
+
+    def _update_groups_cache(self):
+        """更新群聊缓存，直接从数据库获取"""
+        try:
+            logger.info("开始从数据库更新群聊缓存")
+            
+            # 直接使用数据库路径创建新连接，避免线程安全问题
+            import sqlite3
+            db_path = os.path.join("database", "contacts.db")
+            
+            if os.path.exists(db_path):
+                # 每次都创建新的连接，确保线程安全
+                conn = sqlite3.connect(db_path)
+                cursor = conn.cursor()
+                
+                # 查询所有群聊（type = 'group' 或 wxid包含@chatroom）
+                cursor.execute("""
+                SELECT wxid, nickname FROM contacts 
+                WHERE (type = 'group' OR wxid LIKE '%@chatroom') 
+                AND wxid IS NOT NULL AND wxid != ''
+                AND nickname IS NOT NULL AND nickname != ''
+                """)
+                
+                rows = cursor.fetchall()
+                count = 0
+                
                 for row in rows:
                     wxid = row[0]
                     nickname = row[1]
-                    remark = row[2]
-
+                    
                     if wxid and nickname:
-                        self.friends_cache[nickname] = wxid
+                        self.groups_cache[nickname] = wxid
                         count += 1
-                        # 如果有备注名，也添加到缓存
-                        if remark:
-                            self.friends_cache[remark] = wxid
-
-                logger.info(f"从数据库加载了 {count} 个联系人")
-        except Exception as e:
-            logger.error(f"从数据库加载联系人信息失败: {e}")
-
-    def _update_groups_cache(self):
-        """更新群聊缓存"""
-        try:
-            # 直接通过API获取群聊列表
-            try:
-                url = f'http://{self.api_ip}:{self.api_port}/VXAPI/Group/GetChatroomList'
-                json_param = {"Wxid": self.my_wxid}
-                response = requests.post(url, json=json_param, timeout=10)
-
-                if response.status_code == 200:
-                    json_resp = response.json()
-                    if json_resp.get("Success"):
-                        rooms_result = json_resp.get("Data")
-                        logger.info("成功通过API获取群聊列表")
-                    else:
-                        logger.error(f"API获取群聊失败: {json_resp.get('Message')}")
-                        rooms_result = None
-                else:
-                    logger.error(f"调用API获取群聊失败，状态码: {response.status_code}")
-                    rooms_result = None
-            except Exception as e:
-                logger.error(f"通过API获取群聊列表失败: {e}")
-                rooms_result = None
-
-            # 如果没有找到可用方法，记录更多调试信息
-            if not rooms_result:
-                logger.error("无法通过API获取群聊列表")
-                # 尝试从数据库加载群聊信息作为备用
-                self._load_groups_from_db()
-                return
-
-            # 处理不同格式的返回结果
-            rooms = []
-            if isinstance(rooms_result, dict):
-                if "List" in rooms_result:
-                    rooms = rooms_result["List"]
-                elif "data" in rooms_result:
-                    rooms = rooms_result["data"]
-                elif "Data" in rooms_result:
-                    rooms = rooms_result["Data"]
-                elif "ContactList" in rooms_result:
-                    rooms = rooms_result["ContactList"]
-            elif isinstance(rooms_result, list):
-                rooms = rooms_result
-
-            logger.info(f"处理后的群聊数据: {rooms[:3]}...")  # 只显示前3个避免日志过长
-
-            # 遍历群聊数据，提取信息
-            count = 0
-            for room in rooms:
-                # 检查是否为群聊
-                wxid = None
-                nickname = None
-
-                if isinstance(room, dict):
-                    # 提取不同格式中的wxid和名称
-                    if "wxid" in room:
-                        wxid = room["wxid"]
-                    elif "Wxid" in room:
-                        wxid = room["Wxid"]
-                    elif "UserName" in room:
-                        wxid = room["UserName"]
-
-                    if "nickname" in room:
-                        nickname = room["nickname"]
-                    elif "NickName" in room:
-                        nickname = room["NickName"]
-                    elif "Nickname" in room:
-                        nickname = room["Nickname"]
-                    elif "DisplayName" in room:
-                        nickname = room["DisplayName"]
-
-                # 只处理群聊
-                if wxid and "@chatroom" in wxid and nickname:
-                    self.groups_cache[nickname] = wxid
-                    count += 1
-                    # 也添加格式化后的名称作为备用
-                    formatted_name = nickname.strip()
-                    if formatted_name != nickname:
-                        self.groups_cache[formatted_name] = wxid
-
-            logger.info(f"更新群聊缓存完成，共 {count} 条记录")
-            logger.info(f"群聊缓存内容: {self.groups_cache}")
-
-            # 如果群聊缓存为空，尝试从数据库加载
-            if count == 0:
-                self._load_groups_from_db()
-
-        except Exception as e:
-            logger.error(f"更新群聊缓存时发生异常: {e}")
-            # 出现异常时，尝试从数据库加载群聊信息
-            self._load_groups_from_db()
-
-    def _load_groups_from_db(self):
-        """从数据库加载群聊信息作为备用方案"""
-        try:
-            # 尝试连接到contacts.db
-            conn = self.wx_client.get_contacts_db()
-            if conn:
-                cursor = conn.cursor()
-                # 查询群聊信息
-                cursor.execute(
-                    "SELECT DISTINCT group_wxid, group_name FROM group_members WHERE group_wxid LIKE '%@chatroom' AND group_name IS NOT NULL")
-                rows = cursor.fetchall()
-
-                count = 0
-                for row in rows:
-                    if row[0] and row[1]:  # 确保ID和名称都不为空
-                        self.groups_cache[row[1]] = row[0]
-                        count += 1
-
+                
+                conn.close()
                 logger.info(f"从数据库加载了 {count} 个群聊信息")
-                logger.info(f"数据库群聊缓存内容: {self.groups_cache}")
+                
+                # 记录数据库中的群聊数量
+                if count < 5:
+                    logger.warning(f"数据库中群聊较少，仅有{count}个，可能需要更新数据库")
+                    
+            else:
+                logger.error(f"联系人数据库文件不存在: {db_path}")
+                
         except Exception as e:
-            logger.error(f"从数据库加载群聊信息失败: {e}")
+            logger.error(f"从数据库更新群聊缓存失败: {e}")
 
     def _update_group_members(self, group_wxid):
-        """更新指定群聊的成员缓存"""
+        """更新指定群聊的成员缓存，直接从数据库获取"""
         try:
-            # 使用API获取群成员
-            url = f'http://{self.api_ip}:{self.api_port}/VXAPI/Group/GetChatroomMemberDetail'
-            json_param = {"Wxid": self.my_wxid, "QID": group_wxid}
-
-            try:
-                response = requests.post(url, json=json_param, timeout=10)
-
-                if response.status_code == 200:
-                    json_resp = response.json()
-                    if json_resp.get("Success"):
-                        members_result = json_resp.get("Data")
-                        logger.info(f"通过API成功获取群 {group_wxid} 成员")
-                    else:
-                        logger.error(f"API获取群成员失败: {json_resp.get('Message')}")
-                        members_result = None
-                else:
-                    logger.error(f"调用API获取群成员失败，状态码: {response.status_code}")
-                    members_result = None
-            except Exception as e:
-                logger.error(f"通过API获取群成员时出错: {e}")
-                members_result = None
-
-            # 如果没有找到可用方法，尝试数据库查询
-            if not members_result:
-                logger.error(f"无法通过API获取群 {group_wxid} 成员")
-                return self._load_group_members_from_db(group_wxid)
-
-            # 处理不同格式的返回结果
-            members = []
-            if isinstance(members_result, dict):
-                if "NewChatroomData" in members_result and "ChatRoomMember" in members_result["NewChatroomData"]:
-                    members = members_result["NewChatroomData"]["ChatRoomMember"]
-                elif "List" in members_result:
-                    members = members_result["List"]
-                elif "MemberList" in members_result:
-                    members = members_result["MemberList"]
-            elif isinstance(members_result, list):
-                members = members_result
-
-            logger.info(f"群 {group_wxid} 成员数据: {members[:3]}...")  # 只显示前3个成员
-
-            # 初始化群组成员字典
-            if group_wxid not in self.members_cache:
-                self.members_cache[group_wxid] = {}
-
-            # 遍历群成员数据，提取信息
-            count = 0
-            for member in members:
-                wxid = None
-                nickname = None
-                display_name = None
-
-                if isinstance(member, dict):
-                    # 提取不同格式中的数据
-                    if "wxid" in member:
-                        wxid = member["wxid"]
-                    elif "Wxid" in member:
-                        wxid = member["Wxid"]
-                    elif "UserName" in member:
-                        wxid = member["UserName"]
-
-                    if "nickname" in member:
-                        nickname = member["nickname"]
-                    elif "NickName" in member:
-                        nickname = member["NickName"]
-                    elif "Nickname" in member:
-                        nickname = member["Nickname"]
-
-                    # 群内显示名
-                    if "displayname" in member:
-                        display_name = member["displayname"]
-                    elif "DisplayName" in member:
-                        display_name = member["DisplayName"]
-
-                if wxid and (nickname or display_name):
-                    # 优先使用群显示名，其次使用昵称
-                    if display_name:
-                        self.members_cache[group_wxid][display_name] = wxid
-                        count += 1
-                    if nickname:
-                        self.members_cache[group_wxid][nickname] = wxid
-                        if not display_name:  # 如果没有显示名，才计数
-                            count += 1
-
-            logger.info(f"更新群 {group_wxid} 成员缓存完成，共 {count} 条记录")
-
-            # 如果没有找到成员，尝试从数据库加载
-            if count == 0:
-                self._load_group_members_from_db(group_wxid)
-
-        except Exception as e:
-            logger.error(f"更新群成员缓存时发生异常: {e}")
-            # 出现异常时，尝试从数据库加载群成员
-            self._load_group_members_from_db(group_wxid)
-
-    def _load_group_members_from_db(self, group_wxid):
-        """从数据库加载群成员信息"""
-        try:
-            # 尝试连接到contacts.db
-            conn = self.wx_client.get_contacts_db()
-            if conn:
+            logger.info(f"开始从数据库更新群 {group_wxid} 的成员缓存")
+            
+            # 直接使用数据库路径创建新连接，避免线程安全问题
+            import sqlite3
+            db_path = os.path.join("database", "contacts.db")
+            
+            if os.path.exists(db_path):
+                # 每次都创建新的连接，确保线程安全
+                conn = sqlite3.connect(db_path)
                 cursor = conn.cursor()
-
+                
                 # 查询群成员信息
                 cursor.execute("""
                 SELECT member_wxid, nickname, display_name FROM group_members 
-                WHERE group_wxid = ?
+                WHERE group_wxid = ? AND member_wxid IS NOT NULL AND member_wxid != ''
                 """, (group_wxid,))
-
+                
                 rows = cursor.fetchall()
-
-                # 初始化成员字典
+                
+                # 初始化群组成员字典
                 if group_wxid not in self.members_cache:
                     self.members_cache[group_wxid] = {}
-
+                
                 count = 0
                 for row in rows:
                     member_wxid = row[0]
-                    nickname = row[1]
-                    display_name = row[2]
-
+                    nickname = row[1] or ""
+                    display_name = row[2] or ""
+                    
                     if member_wxid:
                         # 优先使用群显示名，其次使用昵称
                         if display_name:
                             self.members_cache[group_wxid][display_name] = member_wxid
                             count += 1
-                        if nickname:
+                        if nickname and nickname != display_name:
                             self.members_cache[group_wxid][nickname] = member_wxid
                             if not display_name:  # 如果没有显示名，才计数
                                 count += 1
-
+                
+                conn.close()
                 logger.info(f"从数据库加载了群 {group_wxid} 的 {count} 名成员")
-                return True
+                
+                # 记录数据库中的群成员数量
+                if count < 3:
+                    logger.warning(f"群 {group_wxid} 的成员信息较少，仅有{count}个，可能需要更新数据库")
+                    
+            else:
+                logger.error(f"联系人数据库文件不存在: {db_path}")
+                
         except Exception as e:
-            logger.error(f"从数据库加载群成员信息失败: {e}")
+            logger.error(f"从数据库更新群成员缓存失败: {e}")
 
-        return False
+
 
     def find_friend_wxid(self, friend_name):
         """通过好友名称查找wxid"""
@@ -650,7 +373,7 @@ class WXAdapter:
                 self.friends_cache[friend_name] = wxid
                 return wxid
 
-        # 尝试从数据库中查找
+        # 尝试从数据库中直接查找
         db_wxid = self._find_friend_wxid_from_db(friend_name)
         if db_wxid:
             self.friends_cache[friend_name] = db_wxid
@@ -662,36 +385,47 @@ class WXAdapter:
     def _find_friend_wxid_from_db(self, friend_name):
         """从数据库查找好友wxid"""
         try:
-            conn = self.wx_client.get_contacts_db()
-            if conn:
+            # 直接使用数据库路径创建新连接，避免线程安全问题
+            import sqlite3
+            db_path = os.path.join("database", "contacts.db")
+            
+            if os.path.exists(db_path):
+                # 每次都创建新的连接，确保线程安全
+                conn = sqlite3.connect(db_path)
                 cursor = conn.cursor()
 
                 # 先尝试精确匹配
                 cursor.execute("""
-                SELECT wxid, nickname, remark FROM contacts 
-                WHERE nickname = ? OR remark = ?
+                SELECT wxid FROM contacts 
+                WHERE (nickname = ? OR remark = ?) 
+                AND type != 'group' AND wxid NOT LIKE '%@chatroom'
                 """, (friend_name, friend_name))
 
                 row = cursor.fetchone()
                 if row and row[0]:
                     logger.info(f"从数据库精确匹配到好友: {friend_name}, wxid: {row[0]}")
+                    conn.close()
                     return row[0]
 
                 # 再尝试模糊匹配
                 cursor.execute("""
                 SELECT wxid, nickname, remark FROM contacts 
-                WHERE nickname LIKE ? OR remark LIKE ?
+                WHERE (nickname LIKE ? OR remark LIKE ?) 
+                AND type != 'group' AND wxid NOT LIKE '%@chatroom'
                 """, (f"%{friend_name}%", f"%{friend_name}%"))
 
                 rows = cursor.fetchall()
                 if rows and len(rows) > 0:
                     for row in rows:
                         if row[0]:
-                            logger.info(
-                                f"从数据库模糊匹配到好友: {friend_name} 匹配到 {row[1] or row[2]}, wxid: {row[0]}")
+                            logger.info(f"从数据库模糊匹配到好友: {friend_name} 匹配到 {row[1] or row[2]}, wxid: {row[0]}")
+                            conn.close()
                             return row[0]
 
+                conn.close()
                 logger.info(f"在数据库中未找到好友 {friend_name}")
+            else:
+                logger.error(f"联系人数据库文件不存在: {db_path}")
         except Exception as e:
             logger.error(f"从数据库查找好友wxid失败: {e}")
 
@@ -831,12 +565,8 @@ class WXAdapter:
             if group_names and any(group_names):
                 # 处理群聊消息
                 for group_name in group_names:
-                    # 先尝试从映射表获取群聊wxid
-                    group_wxid = self.group_mapping.get(group_name)
-
-                    # 如果映射表中没有，再尝试从缓存获取
-                    if not group_wxid:
-                        group_wxid = self.find_group_wxid(group_name)
+                    # 从数据库缓存获取群聊wxid
+                    group_wxid = self.find_group_wxid(group_name)
 
                     if not group_wxid:
                         logger.error(f"无法找到群聊 {group_name} 的wxid")
@@ -856,11 +586,8 @@ class WXAdapter:
                         else:
                             # 获取接收者的wxid
                             for receiver_name in receiver_names:
-                                member_wxid = self.user_mapping.get(receiver_name)
-
-                                # 如果映射表中没有，再尝试从缓存获取
-                                if not member_wxid:
-                                    member_wxid = self.find_member_wxid(group_wxid, receiver_name)
+                                # 从数据库缓存获取成员wxid
+                                member_wxid = self.find_member_wxid(group_wxid, receiver_name)
 
                                 if member_wxid:
                                     at_wxids.append(member_wxid)
@@ -894,12 +621,8 @@ class WXAdapter:
             # 处理个人消息
             elif receiver_names and any(receiver_names):
                 for receiver_name in receiver_names:
-                    # 先尝试从映射表获取好友wxid
-                    friend_wxid = self.user_mapping.get(receiver_name)
-
-                    # 如果映射表中没有，再尝试从缓存获取
-                    if not friend_wxid:
-                        friend_wxid = self.find_friend_wxid(receiver_name)
+                    # 从数据库缓存获取好友wxid
+                    friend_wxid = self.find_friend_wxid(receiver_name)
 
                     if not friend_wxid:
                         logger.error(f"无法找到好友 {receiver_name} 的wxid")
@@ -923,19 +646,40 @@ class WXAdapter:
         """启动自动刷新缓存的线程"""
 
         def auto_refresh():
+            # 先等待5秒再进行第一次刷新，确保初始化完成
+            logger.info("缓存刷新线程启动，将在5秒后进行第一次缓存加载")
+            time.sleep(5)
+            
+            # 第一次刷新
+            try:
+                logger.info("首次加载：开始刷新联系人和群聊缓存")
+                self.refresh_cache()
+                logger.info("首次加载完成")
+            except Exception as e:
+                logger.error(f"首次加载缓存时发生异常: {e}")
+            
+            # 定时刷新
             while True:
                 try:
                     # 等待10分钟
                     time.sleep(600)
-                    logger.info("定时任务：刷新联系人和群聊缓存")
+                    logger.info("定时任务：开始刷新联系人和群聊缓存")
+                    old_friends_count = len(self.friends_cache)
+                    old_groups_count = len(self.groups_cache)
+                    
                     self.refresh_cache()
+                    
+                    new_friends_count = len(self.friends_cache)
+                    new_groups_count = len(self.groups_cache)
+                    
+                    logger.info(f"定时任务完成 - 好友: {old_friends_count}->{new_friends_count}, 群聊: {old_groups_count}->{new_groups_count}")
                 except Exception as e:
                     logger.error(f"自动刷新缓存时发生异常: {e}")
 
         # 创建并启动线程
         refresh_thread = Thread(target=auto_refresh, daemon=True)
         refresh_thread.start()
-        logger.info("已启动定时刷新缓存线程，每10分钟刷新一次")
+        logger.info("已启动定时刷新缓存线程，将在5秒后首次加载，然后每10分钟刷新一次")
 
     def send_message(self, to_wxid: str, content: str, at_list=None):
         """
@@ -1467,8 +1211,9 @@ if __name__ == "__main__":
         if args.list:
             logger.info("刷新缓存并显示可用的群和用户")
             wx_adapter.refresh_cache()
-            logger.info(f"可用的群列表: {list(wx_adapter.groups_cache.keys())}")
-            logger.info(f"可用的好友列表: {list(wx_adapter.friends_cache.keys())}")
+            
+            logger.info(f"好友列表({len(wx_adapter.friends_cache)}个): {list(wx_adapter.friends_cache.keys())}")
+            logger.info(f"群列表({len(wx_adapter.groups_cache)}个): {list(wx_adapter.groups_cache.keys())}")
             exit(0)
 
         # 测试消息内容：优先使用图片URL，其次使用普通消息
