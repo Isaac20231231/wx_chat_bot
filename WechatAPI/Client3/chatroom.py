@@ -47,7 +47,7 @@ class ChatroomMixin(WechatAPIClientBase):
 
         async with aiohttp.ClientSession() as session:
             json_param = {"Wxid": self.wxid, "QID": chatroom}
-            response = await session.post(f'http://{self.ip}:{self.port}/api/Group/GetChatroomInfoDetail', json=json_param)
+            response = await session.post(f'http://{self.ip}:{self.port}/api/Group/GetChatRoomInfoDetail', json=json_param)
             json_resp = await response.json()
 
             if json_resp.get("Success"):
@@ -73,7 +73,7 @@ class ChatroomMixin(WechatAPIClientBase):
 
         async with aiohttp.ClientSession() as session:
             json_param = {"Wxid": self.wxid, "QID": chatroom}
-            response = await session.post(f'http://{self.ip}:{self.port}/api/Group/GetChatroomInfo', json=json_param)
+            response = await session.post(f'http://{self.ip}:{self.port}/api/Group/GetChatRoomInfo', json=json_param)
             json_resp = await response.json()
 
             if json_resp.get("Success"):

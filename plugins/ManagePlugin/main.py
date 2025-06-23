@@ -11,8 +11,8 @@ from utils.plugin_manager import plugin_manager
 
 class ManagePlugin(PluginBase):
     description = "插件管理器"
-    author = "HenryXiaoYang"
-    version = "1.0.0"
+    author = "xxxbot"
+    version = "1.1.0"
 
     def __init__(self):
         super().__init__()
@@ -57,11 +57,11 @@ class ManagePlugin(PluginBase):
 
         elif command[0] == "加载所有插件":
             attempt = await plugin_manager.load_plugins_from_directory(bot)
-            if isinstance(attempt, list):
-                attempt = '\n'.join(attempt)
-                await bot.send_text_message(message["FromWxid"], f"✅插件加载成功：\n{attempt}")
+            if attempt:
+                attempt_str = '\n'.join(attempt)
+                await bot.send_text_message(message["FromWxid"], f"✅插件加载成功：\n{attempt_str}")
             else:
-                await bot.send_text_message(message["FromWxid"], "❌插件加载失败，请查看日志错误信息")
+                await bot.send_text_message(message["FromWxid"], "❌没有成功加载任何插件，请查看日志了解更多信息")
 
         elif command[0] == "卸载插件":
             if plugin_name == "ManagePlugin":
@@ -101,11 +101,21 @@ class ManagePlugin(PluginBase):
                 await bot.send_text_message(message["FromWxid"], f"❌插件 {plugin_name} 重载失败，请查看日志错误信息")
 
         elif command[0] == "重载所有插件":
-            attempt = await plugin_manager.reload_all_plugins(bot)
-            if attempt:
-                await bot.send_text_message(message["FromWxid"], "✅所有插件重载成功")
+            loaded_plugins, failed_plugins = await plugin_manager.reload_all_plugins(bot)
+            
+            message_parts = []
+            
+            if loaded_plugins:
+                loaded_plugins_str = '\n'.join(loaded_plugins)
+                message_parts.append(f"✅插件重载成功：\n{loaded_plugins_str}")
             else:
-                await bot.send_text_message(message["FromWxid"], "❌插件重载失败，请查看日志错误信息")
+                message_parts.append("❌没有成功重载任何插件")
+            
+            if failed_plugins:
+                failed_plugins_str = '\n'.join(failed_plugins)
+                message_parts.append(f"❌插件重载失败：\n{failed_plugins_str}")
+                
+            await bot.send_text_message(message["FromWxid"], "\n\n".join(message_parts))
 
         elif command[0] == "插件列表":
             plugin_list = plugin_manager.get_plugin_info()

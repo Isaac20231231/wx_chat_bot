@@ -47,7 +47,7 @@ class LoginMixin(WechatAPIClientBase):
                                            'ProxyPassword': proxy.password,
                                            'ProxyUser': proxy.username}
 
-            response = await session.post(f'http://{self.ip}:{self.port}/api/Login/GetQRPad1', json=json_param)
+            response = await session.post(f'http://{self.ip}:{self.port}/api/Login/GetQRPad', json=json_param)
             json_resp = await response.json()
 
             if json_resp.get("Success"):

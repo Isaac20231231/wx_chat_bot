@@ -252,6 +252,57 @@ async def main():
         with open(config_path, "rb") as f:
             config = tomllib.load(f)
         logger.success("读取主设置成功")
+
+        # 输出协议版本信息用于调试
+        protocol_version = config.get("Protocol", {}).get("version", "849")
+        logger.info(f"当前配置的协议版本: {protocol_version}")
+
+        # 设置日志级别
+        log_level = config.get("Admin", {}).get("log_level", "INFO")
+
+        # 定义设置日志级别的函数
+        def set_log_level(level):
+            """设置日志级别"""
+            # 移除所有现有的日志处理器
+            logger.remove()
+
+            # 自定义格式函数：将模块路径中的点号替换为斜杠
+            def format_path(record):
+                # 替换模块名称中的点号为斜杠
+                record["extra"]["module_path"] = record["name"].replace(".", "/")
+                return record
+
+            # 添加文件日志处理器
+            logger.add(
+                "logs/XYBot_{time}.log",
+                format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {extra[module_path]}:{line} | {message}",
+                encoding="utf-8",
+                enqueue=True,
+                retention="2 weeks",
+                rotation="00:01",
+                backtrace=True,
+                diagnose=True,
+                level="DEBUG",  # 文件日志始终使用DEBUG级别，以便记录所有日志
+                filter=format_path
+            )
+
+            # 添加控制台日志处理器，使用更亮的颜色（适合黑色背景）
+            logger.add(
+                sys.stdout,
+                colorize=True,
+                format="<light-blue>{time:YYYY-MM-DD HH:mm:ss}</light-blue> | <level>{level: <8}</level> | <light-yellow>{extra[module_path]}</light-yellow>:<light-green>{line}</light-green> | {message}",
+                level=level,  # 使用配置文件中的日志级别
+                enqueue=True,
+                backtrace=True,
+                diagnose=True,
+                filter=format_path
+            )
+
+            logger.info(f"日志级别已设置为: {level}")
+
+        # 设置日志级别
+        set_log_level(log_level)
+
     except Exception as e:
         logger.error(f"读取主设置失败: {e}")
         return
@@ -422,30 +473,12 @@ if __name__ == "__main__":
     )
 
 
+    # 初始化日志
     logger.remove()
-
     logger.level("API", no=1, color="<cyan>")
 
-    logger.add(
-        "logs/XYBot_{time}.log",
-        format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {message}",
-        encoding="utf-8",
-        enqueue=True,
-        retention="2 weeks",
-        rotation="00:01",
-        backtrace=True,
-        diagnose=True,
-        level="DEBUG",
-    )
-    logger.add(
-        sys.stdout,
-        colorize=True,
-        format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level}</level> | {message}",
-        level="TRACE",
-        enqueue=True,
-        backtrace=True,
-        diagnose=True,
-    )
+    # 默认日志配置，将在main()函数中根据配置文件重新设置
+    logger.add(sys.stderr, level="INFO")
 
     # 设置信号处理程序，确保在程序被终止时能够清理资源
     def signal_handler(sig, frame):

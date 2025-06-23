@@ -51,6 +51,11 @@ class WX849Message(ChatMessage):
         self.is_at = False  # 是否被@，与gewechat保持一致
         self.my_msg = False  # 是否是自己发送的消息，与gewechat保持一致
 
+        # 针对引用的内容进行字段处理
+        self.quoted_message = {}
+        if self.msg_type == 49:
+           self.quoted_message = msg.get("QuotedMessage", {})
+
         # 尝试从MsgSource中提取机器人在群内的昵称
         try:
             msg_source = msg.get("MsgSource", "")

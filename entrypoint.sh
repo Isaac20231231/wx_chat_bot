@@ -92,6 +92,10 @@ elif [[ "$CLEAN_VERSION" == "ipad" ]]; then
     # ipad版本使用pad3目录
     PAD_SERVICE_PATH="/app/849/pad3/linuxService"
     echo "使用iPad协议服务路径: $PAD_SERVICE_PATH"
+elif [[ "$CLEAN_VERSION" == "Mac" ]]; then
+    # Mac版本使用pad3目录(与iPad相同的目录)
+    PAD_SERVICE_PATH="/app/849/pad3/linuxService"
+    echo "使用Mac协议服务路径: $PAD_SERVICE_PATH"
 else
     # 默认使用849协议路径
     PAD_SERVICE_PATH="/app/849/pad/linuxService"

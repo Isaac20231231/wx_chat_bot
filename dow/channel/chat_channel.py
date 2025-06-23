@@ -283,8 +283,10 @@ class ChatChannel(Channel):
                 if not is_at_bot and "at_list" in context.kwargs and "IsAtMessage" in context.kwargs.get("msg", {}).msg:
                     # 只有当IsAtMessage为True时，才检查at_list中是否包含机器人wxid
                     if context.kwargs["msg"].msg["IsAtMessage"]:
+                        # 从配置文件中读取机器人wxid列表
+                        bot_wxids = conf().get("robot_wxids", ["wxid_p60yfpl5zg2m29", "wxid_uz9za1pqr3ea22", "wxid_l5im9jaxhr4412"])
                         # 遍历所有可能的机器人wxid
-                        for bot_wxid in ["wxid_p60yfpl5zg2m29", "wxid_uz9za1pqr3ea22", "wxid_l5im9jaxhr4412"]:
+                        for bot_wxid in bot_wxids:
                             if bot_wxid in context.kwargs["at_list"]:
                                 is_at_bot = True
                                 logger.debug(f"[chat_channel] 从at_list中检测到@机器人: {bot_wxid}")
@@ -293,7 +295,9 @@ class ChatChannel(Channel):
                 # 检查消息内容中是否包含@机器人的文本，并且确认IsAtMessage为True
                 if not is_at_bot and context.content and "IsAtMessage" in context.kwargs.get("msg", {}).msg:
                     if context.kwargs["msg"].msg["IsAtMessage"]:
-                        for bot_name in ["小小x", "小x"]:
+                        # 从配置文件中读取机器人名称列表
+                        robot_names = conf().get("robot_names", ["小小x", "小x", "机器人"])
+                        for bot_name in robot_names:
                             if f"@{bot_name}" in context.content:
                                 is_at_bot = True
                                 logger.debug(f"[chat_channel] 从消息内容中检测到@机器人: @{bot_name}")

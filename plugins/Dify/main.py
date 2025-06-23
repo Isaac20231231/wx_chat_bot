@@ -13,6 +13,7 @@ from enum import Enum
 import urllib.parse
 import mimetypes
 import base64
+import uuid
 
 import aiohttp
 import filetype
@@ -47,238 +48,9 @@ DIFY_ERROR_MESSAGE = "🙅对不起，Dify出现错误！\n"
 INSUFFICIENT_POINTS_MESSAGE = "😭你的积分不够啦！需要 {price} 积分"
 VOICE_TRANSCRIPTION_FAILED = "\n语音转文字失败"
 TEXT_TO_VOICE_FAILED = "\n文本转语音失败"
-CHAT_TIMEOUT = 3600  # 1小时超时
-CHAT_AWAY_TIMEOUT = 1800  # 30分钟自动离开
-MESSAGE_BUFFER_TIMEOUT = 10  # 消息缓冲区超时时间（秒）
-MAX_BUFFERED_MESSAGES = 10  # 最大缓冲消息数
+# 聊天室相关常量已移除
 
-# 聊天室消息模板
-CHAT_JOIN_MESSAGE = """✨ 欢迎来到聊天室！让我们开始愉快的对话吧~
-
-💡 基础指引：
-   📝 直接发消息与我对话
-   🚪 发送"退出聊天"离开
-   ⏰ 5分钟不说话自动暂离
-   🔄 30分钟无互动将退出
-
-🎮 聊天指令：
-   📊 发送"查看状态"
-   📈 发送"聊天室排行"
-   👤 发送"我的统计"
-   💤 发送"暂时离开"
-
-开始聊天吧！期待与你的精彩对话~ 🌟"""
-
-CHAT_LEAVE_MESSAGE = "👋 已退出聊天室，需要再次@我才能继续对话"
-CHAT_TIMEOUT_MESSAGE = "由于您已经1小时没有活动，已被移出聊天室。如需继续对话，请重新发送消息。"
-CHAT_AWAY_MESSAGE = "💤 已设置为离开状态，其他人将看到你正在休息"
-CHAT_BACK_MESSAGE = "🌟 欢迎回来！已恢复活跃状态"
-CHAT_AUTO_AWAY_MESSAGE = "由于您已经30分钟没有活动，已被自动设置为离开状态。"
-
-class UserStatus(Enum):
-    ACTIVE = "活跃"
-    AWAY = "离开"
-    INACTIVE = "未加入"
-
-@dataclass
-class UserStats:
-    total_messages: int = 0
-    total_chars: int = 0
-    join_count: int = 0
-    last_active: float = 0
-    total_active_time: float = 0
-    status: UserStatus = UserStatus.INACTIVE
-
-@dataclass
-class ChatRoomUser:
-    wxid: str
-    group_id: str
-    last_active: float
-    status: UserStatus = UserStatus.ACTIVE
-    stats: UserStats = field(default_factory=UserStats)
-
-@dataclass
-class MessageBuffer:
-    messages: list[str] = field(default_factory=list)
-    last_message_time: float = 0.0
-    timer_task: Optional[asyncio.Task] = None
-    message_count: int = 0
-    files: list[str] = field(default_factory=list)
-
-class ChatRoomManager:
-    def __init__(self):
-        self.active_users = {}
-        self.message_buffers = defaultdict(lambda: MessageBuffer([], 0.0, None))
-        self.user_stats: Dict[tuple[str, str], UserStats] = defaultdict(UserStats)
-
-    def add_user(self, group_id: str, user_wxid: str) -> None:
-        key = (group_id, user_wxid)
-        self.active_users[key] = ChatRoomUser(
-            wxid=user_wxid,
-            group_id=group_id,
-            last_active=time.time()
-        )
-        stats = self.user_stats[key]
-        stats.join_count += 1
-        stats.last_active = time.time()
-        stats.status = UserStatus.ACTIVE
-
-    def remove_user(self, group_id: str, user_wxid: str) -> None:
-        key = (group_id, user_wxid)
-        if key in self.active_users:
-            user = self.active_users[key]
-            stats = self.user_stats[key]
-            stats.total_active_time += time.time() - stats.last_active
-            stats.status = UserStatus.INACTIVE
-            del self.active_users[key]
-        if key in self.message_buffers:
-            buffer = self.message_buffers[key]
-            if buffer.timer_task and not buffer.timer_task.done():
-                buffer.timer_task.cancel()
-            del self.message_buffers[key]
-
-    def update_user_activity(self, group_id: str, user_wxid: str) -> None:
-        key = (group_id, user_wxid)
-        if key in self.active_users:
-            self.active_users[key].last_active = time.time()
-            stats = self.user_stats[key]
-            stats.total_messages += 1
-            stats.last_active = time.time()
-
-    def set_user_status(self, group_id: str, user_wxid: str, status: UserStatus) -> None:
-        key = (group_id, user_wxid)
-        if key in self.active_users:
-            self.active_users[key].status = status
-            self.user_stats[key].status = status
-
-    def get_user_status(self, group_id: str, user_wxid: str) -> UserStatus:
-        key = (group_id, user_wxid)
-        if key in self.active_users:
-            return self.active_users[key].status
-        return UserStatus.INACTIVE
-
-    def get_user_stats(self, group_id: str, user_wxid: str) -> UserStats:
-        return self.user_stats[(group_id, user_wxid)]
-
-    def get_room_stats(self, group_id: str) -> List[tuple[str, UserStats]]:
-        stats = []
-        for (g_id, wxid), user_stats in self.user_stats.items():
-            if g_id == group_id:
-                stats.append((wxid, user_stats))
-        return sorted(stats, key=lambda x: x[1].total_messages, reverse=True)
-
-    def get_active_users_count(self, group_id: str) -> tuple[int, int, int]:
-        active = 0
-        away = 0
-        total = 0
-        for (g_id, _), user in self.active_users.items():
-            if g_id == group_id:
-                total += 1
-                if user.status == UserStatus.ACTIVE:
-                    active += 1
-                elif user.status == UserStatus.AWAY:
-                    away += 1
-        return active, away, total
-
-    async def add_message_to_buffer(self, group_id: str, user_wxid: str, message: str, files: list[str] = None) -> None:
-        """添加消息到缓冲区"""
-        if files is None:
-            files = []
-
-        key = (group_id, user_wxid)
-        if key not in self.message_buffers:
-            self.message_buffers[key] = MessageBuffer()
-
-        buffer = self.message_buffers[key]
-        buffer.messages.append(message)
-        buffer.last_message_time = time.time()
-        buffer.message_count += 1
-        buffer.files.extend(files)  # 添加文件ID到缓冲区
-
-        logger.debug(f"成功添加消息到缓冲区 - 用户: {user_wxid}, 消息: {message}, 当前消息数: {buffer.message_count}, 文件: {files}")
-
-    def get_and_clear_buffer(self, group_id: str, user_wxid: str) -> Tuple[str, list[str]]:
-        """获取并清空缓冲区"""
-        key = (group_id, user_wxid)
-        buffer = self.message_buffers.get(key)
-        if buffer:
-            messages = "\n".join(buffer.messages)
-            files = buffer.files.copy()  # 复制文件ID列表
-            logger.debug(f"合并并清空缓冲区 - 用户: {user_wxid}, 合并消息: {messages}, 文件: {files}")
-            buffer.messages.clear()
-            buffer.message_count = 0
-            buffer.files.clear()  # 清空文件ID列表
-            return messages, files
-        return "", []
-
-    def is_user_active(self, group_id: str, user_wxid: str) -> bool:
-        key = (group_id, user_wxid)
-        if key not in self.active_users:
-            return False
-
-        user = self.active_users[key]
-        if time.time() - user.last_active > CHAT_TIMEOUT:
-            self.remove_user(group_id, user_wxid)
-            return False
-        return True
-
-    def check_and_remove_inactive_users(self) -> list[tuple[str, str]]:
-        current_time = time.time()
-        inactive_users = []
-
-        for (group_id, user_wxid), user in list(self.active_users.items()):
-            if user.status == UserStatus.ACTIVE and current_time - user.last_active > CHAT_AWAY_TIMEOUT:
-                self.set_user_status(group_id, user_wxid, UserStatus.AWAY)
-                inactive_users.append((group_id, user_wxid, "away"))
-            elif current_time - user.last_active > CHAT_TIMEOUT:
-                inactive_users.append((group_id, user_wxid, "timeout"))
-                self.remove_user(group_id, user_wxid)
-
-        return inactive_users
-
-    def format_user_stats(self, group_id: str, user_wxid: str, nickname: str = "未知用户") -> str:
-        stats = self.get_user_stats(group_id, user_wxid)
-        status = self.get_user_status(group_id, user_wxid)
-        active_time = int(stats.total_active_time / 60)
-        return f"""📊 {nickname} 的聊天室数据：
-
-🏷️ 当前状态：{status.value}
-💬 发送消息：{stats.total_messages} 条
-📝 总字数：{stats.total_chars} 字
-🔄 加入次数：{stats.join_count} 次
-⏱️ 活跃时间：{active_time} 分钟"""
-
-    def format_room_status(self, group_id: str) -> str:
-        active, away, total = self.get_active_users_count(group_id)
-        return f"""🏠 聊天室状态：
-
-👥 当前成员：{total} 人
-✨ 活跃成员：{active} 人
-💤 暂离成员：{away} 人"""
-
-    async def format_room_ranking(self, group_id: str, bot: WechatAPIClient, limit: int = 5) -> str:
-        stats = self.get_room_stats(group_id)
-        result = ["🏆 聊天室排行榜：\n"]
-
-        for i, (wxid, user_stats) in enumerate(stats[:limit], 1):
-            try:
-                nickname = await bot.get_nickname(wxid) or "未知用户"
-            except:
-                nickname = "未知用户"
-            result.append(f"{self._get_rank_emoji(i)} {nickname}")
-            result.append(f"   💬 {user_stats.total_messages}条消息")
-            result.append(f"   📝 {user_stats.total_chars}字")
-        return "\n".join(result)
-
-    @staticmethod
-    def _get_rank_emoji(rank: int) -> str:
-        if rank == 1:
-            return "🥇"
-        elif rank == 2:
-            return "🥈"
-        elif rank == 3:
-            return "🥉"
-        return f"{rank}."
+# 聊天室相关类已移除
 
 @dataclass
 class ModelConfig:
@@ -291,12 +63,11 @@ class ModelConfig:
 class Dify(PluginBase):
     description = "Dify插件"
     author = "老夏的金库"
-    version = "1.3.2"  # 更新版本号
+    version = "1.4.3"  # 更新版本号 - 移除聊天室功能
     is_ai_platform = True  # 标记为 AI 平台插件
 
     def __init__(self):
         super().__init__()
-        self.chat_manager = ChatRoomManager()
         self.user_models = {}  # 存储用户当前使用的模型
         try:
             with open("main_config.toml", "rb") as f:
@@ -321,7 +92,8 @@ class Dify(PluginBase):
             self.robot_names = plugin_config.get("robot-names", [])
             # 移除单独的 URL 配置，改为动态构建
             self.remember_user_model = plugin_config.get("remember_user_model", True)
-            self.chatroom_enable = plugin_config.get("chatroom_enable", True)  # 添加聊天室功能开关
+            # 聊天室功能已移除
+            self.support_agent_mode = plugin_config.get("support_agent_mode", True)  # 添加Agent模式支持开关
 
             # 加载所有模型配置
             self.models = {}
@@ -351,6 +123,12 @@ class Dify(PluginBase):
         self.files_dir = "files"
         # 创建文件存储目录
         os.makedirs(self.files_dir, exist_ok=True)
+        # 创建临时文件目录
+        os.makedirs("temp", exist_ok=True)
+
+        # 添加Agent模式相关属性
+        self.current_agent_thoughts = {}  # 存储当前Agent思考过程，格式: {conversation_id: [thought1, thought2, ...]}
+        self.agent_files = {}  # 存储Agent生成的文件，格式: {file_id: {url: "", type: "", belongs_to: ""}}
 
         # 创建唤醒词到模型的映射
         self.wakeup_word_to_model = {}
@@ -457,127 +235,10 @@ class Dify(PluginBase):
         return current_model, original_content, False
 
     async def check_and_notify_inactive_users(self, bot: WechatAPIClient):
-        # 如果聊天室功能关闭，则直接返回，不进行检查和提醒
-        if not self.chatroom_enable:
-            return
+        # 聊天室功能已移除
+        return
 
-        inactive_users = self.chat_manager.check_and_remove_inactive_users()
-        for group_id, user_wxid, status in inactive_users:
-            if status == "away":
-                await bot.send_at_message(group_id, "\n" + CHAT_AUTO_AWAY_MESSAGE, [user_wxid])
-            elif status == "timeout":
-                await bot.send_at_message(group_id, "\n" + CHAT_TIMEOUT_MESSAGE, [user_wxid])
-
-    async def process_buffered_messages(self, bot: WechatAPIClient, group_id: str, user_wxid: str):
-        logger.debug(f"开始处理缓冲消息 - 用户: {user_wxid}, 群组: {group_id}")
-        messages, files = self.chat_manager.get_and_clear_buffer(group_id, user_wxid)
-        logger.debug(f"从缓冲区获取到的消息: {messages}")
-        logger.debug(f"从缓冲区获取到的文件: {files}")
-
-        if messages is not None and messages.strip():
-            logger.debug(f"合并后的消息: {messages}")
-            message = {
-                "FromWxid": group_id,
-                "SenderWxid": user_wxid,
-                "Content": messages,
-                "IsGroup": True,
-                "MsgType": 1
-            }
-            logger.debug(f"准备检查积分")
-            if await self._check_point(bot, message):
-                logger.debug("积分检查通过，开始调用 Dify API")
-                try:
-                    # 检查是否有唤醒词或触发词
-                    model, processed_query, is_switch = self.get_model_from_message(messages, user_wxid)
-                    await self.dify(bot, message, processed_query, files=files, specific_model=model)
-                    logger.debug("成功调用 Dify API 并发送消息")
-                except Exception as e:
-                    logger.error(f"调用 Dify API 失败: {e}")
-                    logger.error(traceback.format_exc())
-                    await bot.send_at_message(group_id, "\n消息处理失败，请稍后重试。", [user_wxid])
-        else:
-            logger.debug("缓冲区为空或消息无效，无需处理")
-
-    async def _delayed_message_processing(self, bot: WechatAPIClient, group_id: str, user_wxid: str):
-        key = (group_id, user_wxid)
-        try:
-            logger.debug(f"开始延迟处理 - 用户: {user_wxid}, 群组: {group_id}")
-            await asyncio.sleep(MESSAGE_BUFFER_TIMEOUT)
-
-            buffer = self.chat_manager.message_buffers.get(key)
-            if buffer and buffer.messages:
-                logger.debug(f"缓冲区消息数: {len(buffer.messages)}")
-                logger.debug(f"最后消息时间: {time.time() - buffer.last_message_time:.2f}秒前")
-
-                if time.time() - buffer.last_message_time >= MESSAGE_BUFFER_TIMEOUT:
-                    logger.debug("开始处理缓冲消息")
-                    await self.process_buffered_messages(bot, group_id, user_wxid)
-                else:
-                    logger.debug("跳过处理 - 有新消息，重新调度")
-                    await self.schedule_message_processing(bot, group_id, user_wxid)
-        except asyncio.CancelledError:
-            logger.debug(f"定时器被取消 - 用户: {user_wxid}, 群组: {group_id}")
-        except Exception as e:
-            logger.error(f"处理消息缓冲区时出错: {e}")
-            await bot.send_at_message(group_id, "\n消息处理发生错误，请稍后重试。", [user_wxid])
-
-    async def schedule_message_processing(self, bot: WechatAPIClient, group_id: str, user_wxid: str):
-        key = (group_id, user_wxid)
-        if key not in self.chat_manager.message_buffers:
-            self.chat_manager.message_buffers[key] = MessageBuffer()
-
-        buffer = self.chat_manager.message_buffers[key]
-        logger.debug(f"安排消息处理 - 用户: {user_wxid}, 群组: {group_id}")
-
-        # 获取buffer中的消息内容
-        buffer_content = "\n".join(buffer.messages) if buffer.messages else ""
-
-        # 检查是否有最近的图片
-        image_content = await self.get_cached_image(group_id)
-        if image_content:
-            try:
-                logger.debug("发现最近的图片，准备上传到 Dify")
-                # 先检查是否有唤醒词获取对应模型
-                wakeup_model = None
-                for wakeup_word, model_config in self.wakeup_word_to_model.items():
-                    wakeup_lower = wakeup_word.lower()
-                    buffer_content_lower = buffer_content.lower()
-                    if buffer_content_lower.startswith(wakeup_lower) or f" {wakeup_lower}" in buffer_content_lower:
-                        wakeup_model = model_config
-                        break
-
-                # 如果没有找到唤醒词对应的模型，则使用用户当前的模型
-                model_config = wakeup_model or self.get_user_model(user_wxid)
-
-                file_id = await self.upload_file_to_dify(
-                    image_content,
-                    "image/jpeg",
-                    group_id,
-                    model_config=model_config  # 传递正确的模型配置
-                )
-                if file_id:
-                    logger.debug(f"图片上传成功，文件ID: {file_id}")
-                    buffer.files.append(file_id)  # 直接添加到buffer的files列表
-                    logger.debug(f"当前buffer中的文件: {buffer.files}")
-                else:
-                    logger.error("图片上传失败")
-            except Exception as e:
-                logger.error(f"处理图片失败: {e}")
-
-        if buffer.message_count >= MAX_BUFFERED_MESSAGES:
-            logger.debug("缓冲区已满，立即处理消息")
-            await self.process_buffered_messages(bot, group_id, user_wxid)
-            return
-
-        if buffer.timer_task and not buffer.timer_task.done():
-            logger.debug("取消已有定时器")
-            buffer.timer_task.cancel()
-
-        logger.debug("创建新定时器")
-        buffer.timer_task = asyncio.create_task(
-            self._delayed_message_processing(bot, group_id, user_wxid)
-        )
-        logger.debug(f"定时器任务已创建 - 用户: {user_wxid}")
+    # 聊天室相关方法已移除
 
     @on_text_message(priority=20)
     async def handle_text(self, bot: WechatAPIClient, message: dict):
@@ -644,12 +305,6 @@ class Dify(PluginBase):
         # 以下是群聊处理逻辑
         group_id = message["FromWxid"]
         user_wxid = message["SenderWxid"]
-
-        if content == "退出聊天":
-            if self.chat_manager.is_user_active(group_id, user_wxid):
-                self.chat_manager.remove_user(group_id, user_wxid)
-                await bot.send_at_message(group_id, "\n" + CHAT_LEAVE_MESSAGE, [user_wxid])
-            return
 
         # 添加对切换模型命令的特殊处理
         if content.endswith("切换"):
@@ -738,68 +393,29 @@ class Dify(PluginBase):
         # 继续处理@或命令的情况
         if is_at or is_command:
             # 群聊处理逻辑
-            if not self.chat_manager.is_user_active(group_id, user_wxid):
-                if is_at or is_command:
-                    # 根据配置决定是否加入聊天室
-                    if self.chatroom_enable:
-                        self.chat_manager.add_user(group_id, user_wxid)
-                        await bot.send_at_message(group_id, "\n" + CHAT_JOIN_MESSAGE, [user_wxid])
-
-                    query = content
-                    for robot_name in self.robot_names:
-                        query = query.replace(f"@{robot_name}", "").strip()
-                    if command in self.commands:
-                        query = query[len(command):].strip()
-                    if query:
-                        if await self._check_point(bot, message, model):
-                            # 检查是否有唤醒词或触发词
-                            model, processed_query, is_switch = self.get_model_from_message(query, message["SenderWxid"])
-                            await self.dify(bot, message, processed_query, files=files, specific_model=model)
+            query = content
+            for robot_name in self.robot_names:
+                query = query.replace(f"@{robot_name}", "").strip()
+            if command in self.commands:
+                query = query[len(command):].strip()
+            if query:
+                if await self._check_point(bot, message, model):
+                    # 检查是否有唤醒词或触发词
+                    model, processed_query, is_switch = self.get_model_from_message(query, message["SenderWxid"])
+                    await self.dify(bot, message, processed_query, files=files, specific_model=model)
             return
 
-        # 如果聊天室功能被禁用，则所有消息都需要@或命令触发
-        if not self.chatroom_enable:
-            if is_at or is_command:
-                query = content
-                for robot_name in self.robot_names:
-                    query = query.replace(f"@{robot_name}", "").strip()
-                if command in self.commands:
-                    query = query[len(command):].strip()
-                if query:
-                    if await self._check_point(bot, message):
-                        await self.dify(bot, message, query, files=files)
-            return
-
-        if content == "查看状态":
-            status_msg = self.chat_manager.format_room_status(group_id)
-            await bot.send_at_message(group_id, "\n" + status_msg, [user_wxid])
-            return
-        elif content == "暂时离开":
-            self.chat_manager.set_user_status(group_id, user_wxid, UserStatus.AWAY)
-            await bot.send_at_message(group_id, "\n" + CHAT_AWAY_MESSAGE, [user_wxid])
-            return
-        elif content == "回来了":
-            self.chat_manager.set_user_status(group_id, user_wxid, UserStatus.ACTIVE)
-            await bot.send_at_message(group_id, "\n" + CHAT_BACK_MESSAGE, [user_wxid])
-            return
-        elif content == "我的统计":
-            try:
-                nickname = await bot.get_nickname(user_wxid) or "未知用户"
-            except:
-                nickname = "未知用户"
-            stats_msg = self.chat_manager.format_user_stats(group_id, user_wxid, nickname)
-            await bot.send_at_message(group_id, "\n" + stats_msg, [user_wxid])
-            return
-        elif content == "聊天室排行":
-            ranking_msg = await self.chat_manager.format_room_ranking(group_id, bot)
-            await bot.send_at_message(group_id, "\n" + ranking_msg, [user_wxid])
-            return
-
-        self.chat_manager.update_user_activity(group_id, user_wxid)
-
-        if self.chat_manager.get_user_status(group_id, user_wxid) == UserStatus.AWAY:
-            self.chat_manager.set_user_status(group_id, user_wxid, UserStatus.ACTIVE)
-            await bot.send_at_message(group_id, "\n" + CHAT_BACK_MESSAGE, [user_wxid])
+        # 聊天室功能已移除，所有消息都需要@或命令触发
+        if is_at or is_command:
+            query = content
+            for robot_name in self.robot_names:
+                query = query.replace(f"@{robot_name}", "").strip()
+            if command in self.commands:
+                query = query[len(command):].strip()
+            if query:
+                if await self._check_point(bot, message):
+                    await self.dify(bot, message, query, files=files)
+        return
 
         if content:
             if is_at or is_command:
@@ -819,10 +435,10 @@ class Dify(PluginBase):
                         query = content[len(at_bot_prefix):].strip()
                         logger.debug(f"移除@{at_bot_prefix}后的查询内容: {query}")
                     else:
-                        # 如果不是@机器人，则尝试找空格
+                        # 如果不是@机器人，则尝试找第一个空格
                         space_index = content.find(' ')
                         if space_index > 0:
-                            # 只保留空格后面的内容
+                            # 保留第一个空格后面的所有内容
                             query = content[space_index+1:].strip()
                             logger.debug(f"移除@前缀后的查询内容: {query}")
                         else:
@@ -890,10 +506,10 @@ class Dify(PluginBase):
                 query = content[len(at_bot_prefix):].strip()
                 logger.debug(f"移除@{at_bot_prefix}后的查询内容: {query}")
             else:
-                # 如果不是@机器人，则尝试找空格
+                # 如果不是@机器人，则尝试找第一个空格
                 space_index = content.find(' ')
                 if space_index > 0:
-                    # 只保留空格后面的内容
+                    # 保留第一个空格后面的所有内容
                     query = content[space_index+1:].strip()
                     logger.debug(f"移除@前缀后的查询内容: {query}")
                 else:
@@ -915,17 +531,7 @@ class Dify(PluginBase):
         group_id = message["FromWxid"]
         user_wxid = message["SenderWxid"]
 
-        if query == "退出聊天":
-            if self.chat_manager.is_user_active(group_id, user_wxid):
-                self.chat_manager.remove_user(group_id, user_wxid)
-                await bot.send_at_message(group_id, "\n" + CHAT_LEAVE_MESSAGE, [user_wxid])
-            return False
-
-        if not self.chat_manager.is_user_active(group_id, user_wxid):
-            # 根据配置决定是否加入聊天室并发送欢迎消息
-            self.chat_manager.add_user(group_id, user_wxid)
-            if self.chatroom_enable:
-                await bot.send_at_message(group_id, "\n" + CHAT_JOIN_MESSAGE, [user_wxid])
+        # 聊天室功能已移除
 
         logger.debug(f"提取到的 query: {query}")
 
@@ -1009,6 +615,11 @@ class Dify(PluginBase):
                         is_at_bot = True
                         break
 
+                    # 特殊处理：检查是否是@小小x这样的格式（可能有空格）
+                    if content.lower().startswith(f'@{robot_name.lower()}'):
+                        is_at_bot = True
+                        break
+
             # 只有当用户@了机器人时，才处理引用消息
             if is_at and is_at_bot:
                 # 处理@机器人的引用消息
@@ -1028,10 +639,10 @@ class Dify(PluginBase):
                         query = content[len(at_bot_prefix):].strip()
                         logger.debug(f"移除@{at_bot_prefix}后的查询内容: {query}")
                     else:
-                        # 如果不是@机器人，则尝试找空格
+                        # 如果不是@机器人，则尝试找第一个空格
                         space_index = content.find(' ')
                         if space_index > 0:
-                            # 只保留空格后面的内容
+                            # 保留第一个空格后面的所有内容
                             query = content[space_index+1:].strip()
                             logger.debug(f"移除@前缀后的查询内容: {query}")
                         else:
@@ -1228,6 +839,11 @@ class Dify(PluginBase):
                 if content.startswith(f'@{robot_name}'):
                     logger.debug(f"消息内容以@{robot_name}开头")
                     return True
+
+                # 特殊处理：检查是否是@小小x这样的格式（可能有空格）
+                if content.lower().startswith(f'@{robot_name.lower()}'):
+                    logger.debug(f"消息内容以@{robot_name}开头（忽略大小写）")
+                    return True
             # 如果@的不是机器人，继续检查其他条件
 
         # 检查普通消息中的@
@@ -1239,6 +855,18 @@ class Dify(PluginBase):
         # 如果是引用消息，检查消息类型
         if msg_type == 49 or msg_type == 57 or "Quote" in message:  # 引用消息类型
             logger.debug(f"检测到引用消息: {msg_type}, Quote字段: {'Quote' in message}")
+
+            # 特殊处理：如果消息内容以@开头，这是一个强烈的信号，表明用户@了某人
+            if content.startswith('@'):
+                for robot_name in self.robot_names:
+                    if content.startswith(f'@{robot_name}'):
+                        logger.debug(f"引用消息内容以@{robot_name}开头")
+                        return True
+
+                    # 特殊处理：检查是否是@小小x这样的格式（可能有空格）
+                    if content.lower().startswith(f'@{robot_name.lower()}'):
+                        logger.debug(f"引用消息内容以@{robot_name}开头（忽略大小写）")
+                        return True
 
             # 如果有Quote字段，检查引用的消息内容
             if "Quote" in message:
@@ -1282,9 +910,11 @@ class Dify(PluginBase):
         if "Ats" in message and message["Ats"]:
             logger.debug(f"消息包含Ats字段: {message['Ats']}")
             # 如果机器人的wxid在Ats列表中，则返回True
-            if "wxid_uz9za1pqr3ea22" in message["Ats"]:
-                logger.debug("在Ats字段中发现机器人的wxid")
-                return True
+            # 检查所有可能的机器人wxid
+            for wxid in ["wxid_uz9za1pqr3ea22", "wxid_p60yfpl5zg2m29"]:
+                if wxid in message["Ats"]:
+                    logger.debug(f"在Ats字段中发现机器人的wxid: {wxid}")
+                    return True
 
         return False
 
@@ -1356,9 +986,29 @@ class Dify(PluginBase):
         try:
             logger.debug(f"开始调用 Dify API - 用户消息: {processed_query}")
             logger.debug(f"文件列表: {formatted_files}")
-            conversation_id = self.db.get_llm_thread_id(message["FromWxid"], namespace="dify")
 
+            # 获取会话ID
             user_wxid = message["SenderWxid"]
+            from_wxid = message["FromWxid"]
+
+            # 对于群聊消息，可以选择使用群聊ID或发送者ID作为会话ID的键
+            if message["IsGroup"]:
+                # 检查配置，决定使用群聊ID还是发送者ID
+                # 默认使用群聊ID作为会话ID的键，这与原始行为一致
+                use_group_id = True
+
+                if use_group_id:
+                    # 使用群聊ID作为会话ID的键
+                    logger.debug(f"群聊消息，使用群聊ID '{from_wxid}' 获取会话ID")
+                    conversation_id = self.db.get_llm_thread_id(from_wxid, namespace="dify")
+                else:
+                    # 使用发送者的wxid作为会话ID的键
+                    logger.debug(f"群聊消息，使用发送者wxid '{user_wxid}' 获取会话ID")
+                    conversation_id = self.db.get_llm_thread_id(user_wxid, namespace="dify")
+            else:
+                # 私聊消息，使用原来的FromWxid
+                conversation_id = self.db.get_llm_thread_id(from_wxid, namespace="dify")
+
             try:
                 user_username = await bot.get_nickname(user_wxid) or "未知用户"
             except:
@@ -1369,12 +1019,16 @@ class Dify(PluginBase):
                 "user_username": user_username
             }
 
+            # 根据是否支持Agent模式，设置不同的请求参数
+            # 对于群聊消息，使用群聊ID作为user参数，这样对话会与群聊关联，而不是与个人关联
+            user_id = from_wxid if message["IsGroup"] else user_wxid
+
             payload = {
                 "inputs": inputs,
                 "query": processed_query,
-                "response_mode": "streaming",
+                "response_mode": "streaming",  # 始终使用流式响应
                 "conversation_id": conversation_id,
-                "user": message["FromWxid"],
+                "user": user_id,  # 对于群聊使用群聊ID，对于私聊使用发送者的wxid
                 "files": formatted_files,
                 "auto_generate_name": False,
             }
@@ -1410,7 +1064,14 @@ class Dify(PluginBase):
                         ai_resp = api_response.get("data", {}).get("answer", "")
                         new_con_id = api_response.get("data", {}).get("conversation_id", "")
                         if new_con_id and new_con_id != conversation_id:
-                            self.db.save_llm_thread_id(message["FromWxid"], new_con_id, "dify")
+                            # 根据消息类型选择正确的ID来保存会话ID
+                            if message["IsGroup"]:
+                                # 群聊消息，使用群聊ID
+                                self.db.save_llm_thread_id(message["FromWxid"], new_con_id, "dify")
+                                logger.debug(f"群聊消息，保存会话ID到群聊ID: {message['FromWxid']}")
+                            else:
+                                # 私聊消息，使用原来的FromWxid
+                                self.db.save_llm_thread_id(message["FromWxid"], new_con_id, "dify")
 
                         # 过滤掉思考标签
                         think_pattern = r'<think>.*?</think>'
@@ -1418,7 +1079,13 @@ class Dify(PluginBase):
                         logger.debug(f"API代理返回(过滤思考标签后): {ai_resp[:100]}...")
 
                         if ai_resp:
-                            await self.dify_handle_text(bot, message, ai_resp, model)
+                            # 获取消息ID，如果有的话
+                            message_id = api_response.get("data", {}).get("message_id")
+                            if message_id:
+                                logger.debug(f"API代理返回消息ID: {message_id}")
+                                await self.dify_handle_text(bot, message, ai_resp, model, message_id=message_id)
+                            else:
+                                await self.dify_handle_text(bot, message, ai_resp, model)
                         else:
                             logger.warning("API代理未返回有效响应")
                             # 回退到直接调用
@@ -1460,7 +1127,61 @@ class Dify(PluginBase):
                                     logger.debug(f"消息结束时过滤思考标签")
                                 elif event == "message_file":
                                     file_url = resp_json.get("url", "")
-                                    await self.dify_handle_image(bot, message, file_url, model_config=model)
+                                    file_id = resp_json.get("id", "")
+                                    file_type = resp_json.get("type", "image")
+                                    belongs_to = resp_json.get("belongs_to", "assistant")
+
+                                    # 存储文件信息
+                                    self.agent_files[file_id] = {
+                                        "url": file_url,
+                                        "type": file_type,
+                                        "belongs_to": belongs_to
+                                    }
+
+                                    # 处理文件
+                                    if file_type == "image":
+                                        await self.dify_handle_image(bot, message, file_url, model_config=model)
+                                    else:
+                                        logger.info(f"收到非图片类型文件: {file_type}, ID: {file_id}, URL: {file_url}")
+                                elif event == "agent_thought":
+                                    # 处理Agent思考过程
+                                    if self.support_agent_mode:
+                                        thought_id = resp_json.get("id", "")
+                                        message_id = resp_json.get("message_id", "")
+                                        conversation_id = resp_json.get("conversation_id", "")
+                                        position = resp_json.get("position", 0)
+                                        thought = resp_json.get("thought", "")
+                                        observation = resp_json.get("observation", "")
+                                        tool = resp_json.get("tool", "")
+                                        tool_input = resp_json.get("tool_input", "")
+                                        message_files = resp_json.get("message_files", [])
+
+                                        # 记录思考过程
+                                        if conversation_id not in self.current_agent_thoughts:
+                                            self.current_agent_thoughts[conversation_id] = []
+
+                                        self.current_agent_thoughts[conversation_id].append({
+                                            "id": thought_id,
+                                            "message_id": message_id,
+                                            "position": position,
+                                            "thought": thought,
+                                            "observation": observation,
+                                            "tool": tool,
+                                            "tool_input": tool_input,
+                                            "files": message_files
+                                        })
+
+                                        logger.debug(f"Agent思考: {thought[:100]}...")
+                                        if tool:
+                                            logger.debug(f"使用工具: {tool}, 输入: {tool_input}")
+                                        if observation:
+                                            logger.debug(f"观察结果: {observation[:100]}...")
+                                elif event == "agent_message":
+                                    # 处理Agent消息
+                                    if self.support_agent_mode:
+                                        answer = resp_json.get("answer", "")
+                                        ai_resp += answer
+                                        logger.debug(f"Agent消息: {answer}")
                                 elif event == "error":
                                     await self.dify_handle_error(bot, message,
                                                                 resp_json.get("task_id", ""),
@@ -1471,7 +1192,14 @@ class Dify(PluginBase):
 
                             new_con_id = resp_json.get("conversation_id", "")
                             if new_con_id and new_con_id != conversation_id:
-                                self.db.save_llm_thread_id(message["FromWxid"], new_con_id, "dify")
+                                # 根据消息类型选择正确的ID来保存会话ID
+                                if message["IsGroup"]:
+                                    # 群聊消息，使用群聊ID
+                                    self.db.save_llm_thread_id(message["FromWxid"], new_con_id, "dify")
+                                    logger.debug(f"群聊消息，保存会话ID到群聊ID: {message['FromWxid']}")
+                                else:
+                                    # 私聊消息，使用原来的FromWxid
+                                    self.db.save_llm_thread_id(message["FromWxid"], new_con_id, "dify")
                             ai_resp = ai_resp.rstrip()
 
                             # 最后再次过滤思考标签，确保完全移除
@@ -1480,23 +1208,139 @@ class Dify(PluginBase):
                             logger.debug(f"Dify响应(过滤思考标签后): {ai_resp[:100]}...")
                         elif resp.status == 404:
                             logger.warning("会话ID不存在，重置会话ID并重试")
-                            self.db.save_llm_thread_id(message["FromWxid"], "", "dify")
+                            # 根据消息类型选择正确的ID来重置会话ID
+                            if message["IsGroup"]:
+                                # 群聊消息，使用群聊ID
+                                self.db.save_llm_thread_id(message["FromWxid"], "", "dify")
+                                logger.debug(f"群聊消息，重置会话ID，群聊ID: {message['FromWxid']}")
+                            else:
+                                # 私聊消息，使用原来的FromWxid
+                                self.db.save_llm_thread_id(message["FromWxid"], "", "dify")
                             # 重要：在递归调用时必须传递原始模型，不要重新选择
                             return await self.dify(bot, message, processed_query, files=files, specific_model=model)
                         elif resp.status == 400:
-                            return await self.handle_400(bot, message, resp)
+                            # 先获取错误内容
+                            error_text = await resp.content.read()
+                            error_text_str = error_text.decode('utf-8')
+
+                            logger.debug(f"收到400错误，完整错误信息: {error_text_str}")
+
+                            # 强制重置会话ID，无论错误类型如何
+                            # 这是一个更激进的解决方案，但可以确保会话ID被重置
+                            logger.warning("收到400错误，强制重置会话ID")
+
+                            # 重置会话ID
+                            # 根据消息类型选择正确的ID来重置会话ID
+                            if message.get("IsGroup", False):
+                                # 群聊消息，使用群聊ID
+                                from_wxid = message.get("FromWxid", "")
+                                if from_wxid:
+                                    # 确保完全清除会话ID
+                                    self.db.save_llm_thread_id(from_wxid, "", "dify")
+                                    logger.info(f"已重置群聊 {from_wxid} 的会话ID")
+                            else:
+                                # 私聊消息，使用原来的FromWxid
+                                from_wxid = message.get("FromWxid", "")
+                                if from_wxid:
+                                    # 确保完全清除会话ID
+                                    self.db.save_llm_thread_id(from_wxid, "", "dify")
+                                    logger.info(f"已重置私聊用户 {from_wxid} 的会话ID")
+
+                            # 通知用户
+                            await bot.send_text_message(
+                                message["FromWxid"],
+                                f"{XYBOT_PREFIX}检测到对话异常，已重置对话。正在重新处理您的问题..."
+                            )
+
+                            # 等待一小段时间，确保数据库操作完成
+                            await asyncio.sleep(1)
+
+                            # 创建一个新的会话ID
+                            new_conversation_id = str(uuid.uuid4())
+                            logger.info(f"生成新的会话ID: {new_conversation_id}")
+
+                            # 保存新的会话ID
+                            if message.get("IsGroup", False):
+                                # 群聊消息，使用群聊ID
+                                self.db.save_llm_thread_id(message.get("FromWxid", ""), new_conversation_id, "dify")
+                            else:
+                                # 私聊消息，使用原来的FromWxid
+                                self.db.save_llm_thread_id(message.get("FromWxid", ""), new_conversation_id, "dify")
+
+                            # 修改payload，使用新的会话ID
+                            payload["conversation_id"] = new_conversation_id
+                            logger.info(f"更新payload中的会话ID为: {new_conversation_id}")
+
+                            # 重新发送请求，使用新的会话ID
+                            logger.info("使用新会话ID重新发送请求")
+
+                            # 重新构建请求
+                            headers = {"Authorization": f"Bearer {model.api_key}", "Content-Type": "application/json"}
+                            ai_resp = ""
+
+                            # 重新发送请求
+                            logger.debug(f"重新发送请求到 Dify - URL: {model.base_url}/chat-messages, 新会话ID: {new_conversation_id}")
+                            async with aiohttp.ClientSession(proxy=self.http_proxy) as new_session:
+                                async with new_session.post(url=f"{model.base_url}/chat-messages", headers=headers, data=json.dumps(payload)) as new_resp:
+                                    if new_resp.status in (200, 201):
+                                        # 处理成功响应
+                                        logger.info("使用新会话ID的请求成功")
+                                        # 读取响应内容
+                                        async for line in new_resp.content:
+                                            line = line.decode("utf-8").strip()
+                                            if not line or line == "event: ping":
+                                                continue
+                                            elif line.startswith("data: "):
+                                                line = line[6:]
+                                            try:
+                                                resp_json = json.loads(line)
+                                                event = resp_json.get("event", "")
+                                                if event == "message":
+                                                    ai_resp += resp_json.get("answer", "")
+                                                elif event == "message_end":
+                                                    # 处理消息结束事件
+                                                    think_pattern = r'<think>.*?</think>'
+                                                    ai_resp = re.sub(think_pattern, '', ai_resp, flags=re.DOTALL)
+                                            except json.JSONDecodeError:
+                                                logger.error(f"重试请求返回的JSON解析错误: {line}")
+                                                continue
+
+                                        # 处理响应
+                                        if ai_resp:
+                                            await self.dify_handle_text(bot, message, ai_resp, model)
+                                            return
+                                        else:
+                                            logger.warning("重试请求未返回有效响应")
+                                    else:
+                                        # 如果重试仍然失败，放弃并通知用户
+                                        error_msg = await new_resp.text()
+                                        logger.error(f"重试请求失败: HTTP {new_resp.status} - {error_msg}")
+                                        await bot.send_text_message(
+                                            message["FromWxid"],
+                                            f"{XYBOT_PREFIX}重试请求失败，请稍后再试。"
+                                        )
+                                        return
+
+                            # 如果执行到这里，说明重试失败，回退到原始方法
+                            return await self.dify(bot, message, processed_query, files=files, specific_model=model)
                         elif resp.status == 500:
                             return await self.handle_500(bot, message)
                         else:
                             return await self.handle_other_status(bot, message, resp)
 
                 if ai_resp:
-                    await self.dify_handle_text(bot, message, ai_resp, model)
+                    # 获取消息ID，如果有的话
+                    message_id = resp_json.get("message_id")
+                    if message_id:
+                        logger.debug(f"Dify API返回消息ID: {message_id}")
+                        await self.dify_handle_text(bot, message, ai_resp, model, message_id=message_id)
+                    else:
+                        await self.dify_handle_text(bot, message, ai_resp, model)
                 else:
                     logger.warning("Dify未返回有效响应")
         except Exception as e:
             logger.error(f"Dify API 调用失败: {e}")
-            await self.hendle_exceptions(bot, message, model_config=model)
+            await self.handle_exceptions(bot, message, model_config=model)
 
     async def download_file(self, url: str) -> bytes:
         """
@@ -1692,6 +1536,9 @@ class Dify(PluginBase):
             formdata.add_field("file", file_content,
                             filename=processed_file_name,
                             content_type=mime_type)
+            # 确保使用正确的用户ID
+            # 如果user是群聊ID（包含@chatroom），则使用它
+            # 否则，使用发送者的wxid
             formdata.add_field("user", user)
 
             url = f"{model.base_url}/files/upload"
@@ -1734,7 +1581,17 @@ class Dify(PluginBase):
             logger.error(traceback.format_exc())
             return None
 
-    async def dify_handle_text(self, bot: WechatAPIClient, message: dict, text: str, model_config=None):
+    async def dify_handle_text(self, bot: WechatAPIClient, message: dict, text: str, model_config=None, message_id=None):
+        """
+        处理Dify返回的文本消息
+
+        Args:
+            bot: WechatAPIClient实例
+            message: 消息字典
+            text: 要处理的文本内容
+            model_config: 模型配置（可选）
+            message_id: Dify生成的消息ID（可选，用于文本转语音）
+        """
         # 使用传入的model_config，如果没有则使用默认模型
         model = model_config or self.current_model
 
@@ -1743,90 +1600,251 @@ class Dify(PluginBase):
         text = re.sub(think_pattern, '', text, flags=re.DOTALL)
         logger.debug(f"过滤思考标签后的文本: {text[:100]}...")
 
-        # 匹配Dify返回的图片引用格式
-        image_pattern = r'\[(.*?)\]\((.*?)\)'
-        matches = re.findall(image_pattern, text)
+        # 获取会话ID，用于查找Agent思考过程
+        # 根据消息类型选择正确的ID来获取会话ID
+        if message["IsGroup"]:
+            # 群聊消息，使用群聊ID
+            conversation_id = self.db.get_llm_thread_id(message["FromWxid"], namespace="dify")
+            logger.debug(f"群聊消息，从群聊ID获取会话ID: {message['FromWxid']}")
+        else:
+            # 私聊消息，使用原来的FromWxid
+            conversation_id = self.db.get_llm_thread_id(message["FromWxid"], namespace="dify")
 
-        # 移除所有图片引用文本
-        text = re.sub(image_pattern, '', text)
+        # 如果启用了Agent模式且有思考过程，可以在这里处理
+        if self.support_agent_mode and conversation_id in self.current_agent_thoughts:
+            thoughts = self.current_agent_thoughts[conversation_id]
+            if thoughts:
+                logger.debug(f"发现Agent思考过程，共{len(thoughts)}条")
+                # 这里可以根据需要处理思考过程，例如添加到消息中
+                # 例如：添加使用的工具信息
+                tools_used = []
+                for thought in thoughts:
+                    if thought.get("tool") and thought["tool"] not in tools_used:
+                        tools_used.append(thought["tool"])
+
+                if tools_used:
+                    logger.info(f"Agent使用了以下工具: {', '.join(tools_used)}")
+
+                # 清除已处理的思考过程
+                self.current_agent_thoughts[conversation_id] = []
+
+        # 匹配Dify返回的Markdown链接格式 [文件名](URL) 和 ![文件名](URL)
+        link_pattern = r'!?\[(.*?)\]\((.*?)\)'
+        matches = re.findall(link_pattern, text)
+
+        # 记录所有找到的链接
+        if matches:
+            logger.info(f"[文件处理] 在回复中找到 {len(matches)} 个文件链接")
+            for i, (filename, url) in enumerate(matches):
+                logger.info(f"[文件处理] 链接 {i+1}: 文件名='{filename}', URL='{url}'")
+
+        # 移除所有链接文本，以免重复显示
+        text = re.sub(link_pattern, '', text)
 
         # 先发送文字内容
         if text:
             if message["MsgType"] == 34 or self.voice_reply_all:
-                await self.text_to_voice_message(bot, message, text)
-            else:
-                paragraphs = text.split("//n")
-                for paragraph in paragraphs:
-                    if paragraph.strip():
-                        await bot.send_text_message(message["FromWxid"], paragraph.strip())
+                # 获取消息ID，如果有的话
+                message_id = None
+                if self.support_agent_mode and conversation_id in self.current_agent_thoughts:
+                    thoughts = self.current_agent_thoughts[conversation_id]
+                    if thoughts and thoughts[-1].get("message_id"):
+                        message_id = thoughts[-1].get("message_id")
+                        logger.debug(f"找到Agent消息ID: {message_id}，将用于文本转语音")
 
-        # 如果有图片引用，只处理最后一个
-        if matches:
-            filename, url = matches[-1]  # 只取最后一个图片
+                # 使用message_id或text调用文本转语音
+                await self.text_to_voice_message(bot, message, text=text, message_id=message_id)
+            else:
+                # 使用 //n 作为分隔符进行分段发送
+                paragraphs = text.split("//n")
+                logger.info(f"检测到 //n 分隔符，将消息分为 {len(paragraphs)} 段发送")
+
+                for i, paragraph in enumerate(paragraphs):
+                    if paragraph.strip():
+                        logger.debug(f"发送第 {i+1}/{len(paragraphs)} 段消息，长度: {len(paragraph.strip())} 字符")
+                        await bot.send_text_message(message["FromWxid"], paragraph.strip())
+                        # 添加短暂延迟，避免消息发送过快
+                        if i < len(paragraphs) - 1:  # 如果不是最后一段
+                            await asyncio.sleep(0.5)  # 添加0.5秒延迟
+
+        # 处理所有找到的链接
+        for filename, url in matches:
             try:
                 # 如果URL是相对路径,添加base_url
-                if url.startswith('/files'):
+                if url.startswith('/files') or url.startswith('./files'):
                     # 移除base_url中可能的v1路径
                     base_url = model.base_url.replace('/v1', '')
+                    if url.startswith('./'):
+                        url = url[1:]  # 移除开头的点
                     url = f"{base_url}{url}"
 
-                logger.debug(f"处理图片链接: {url}")
+                logger.info(f"[文件处理] 开始下载文件: {filename}, URL: {url}")
+
+                # 设置请求头
                 headers = {"Authorization": f"Bearer {model.api_key}"}
+
+                # 下载文件
                 async with aiohttp.ClientSession(proxy=self.http_proxy) as session:
                     async with session.get(url, headers=headers) as resp:
                         if resp.status == 200:
-                            image_data = await resp.read()
-                            await bot.send_image_message(message["FromWxid"], image_data)
+                            # 获取内容类型
+                            content_type = resp.headers.get('Content-Type', '')
+                            logger.info(f"[文件处理] 下载成功: 状态码={resp.status}, 内容类型={content_type}")
+
+                            # 读取文件内容
+                            file_content = await resp.read()
+                            logger.info(f"[文件处理] 文件大小: {len(file_content)} 字节")
+
+                            # 保存一份用于调试
+                            debug_file = f"debug_file_{int(time.time())}_{os.path.basename(url)}"
+                            try:
+                                with open(debug_file, "wb") as f:
+                                    f.write(file_content)
+                                logger.info(f"[文件处理] 已保存调试文件: {debug_file}")
+                            except Exception as save_error:
+                                logger.error(f"[文件处理] 保存调试文件失败: {save_error}")
+
+                            # 根据内容类型或文件扩展名确定文件类型
+                            file_type = None
+
+                            # 首先尝试使用文件内容检测类型
+                            kind = filetype.guess(file_content)
+                            if kind:
+                                file_type = kind.mime
+                                ext = kind.extension
+                                logger.info(f"[文件处理] 通过内容检测到文件类型: {file_type}, 扩展名: {ext}")
+                            else:
+                                # 尝试从Content-Type头获取
+                                if content_type and content_type != 'application/octet-stream':
+                                    file_type = content_type
+                                    ext = mimetypes.guess_extension(content_type)
+                                    if ext:
+                                        ext = ext.lstrip('.')
+                                    else:
+                                        ext = ""
+                                    logger.info(f"[文件处理] 从Content-Type获取文件类型: {file_type}, 扩展名: {ext}")
+                                else:
+                                    # 尝试从文件名获取扩展名
+                                    ext = os.path.splitext(filename)[1].lower().lstrip('.')
+                                    if not ext and '.' in url:
+                                        ext = os.path.splitext(url)[1].lower().lstrip('.')
+
+                                    if ext:
+                                        file_type = mimetypes.guess_type(f"file.{ext}")[0]
+                                        logger.info(f"[文件处理] 从文件名获取类型: {file_type}, 扩展名: {ext}")
+                                    else:
+                                        # 无法确定类型
+                                        file_type = 'application/octet-stream'
+                                        ext = 'bin'
+                                        logger.warning(f"[文件处理] 无法确定文件类型，使用默认值: {file_type}")
+
+                            # 创建临时目录用于处理文件
+                            temp_dir = os.path.join(os.getcwd(), "temp")
+                            os.makedirs(temp_dir, exist_ok=True)
+                            temp_filename = os.path.join(temp_dir, f"{int(time.time())}_{filename}")
+
+                            try:
+                                # 保存临时文件
+                                with open(temp_filename, "wb") as f:
+                                    f.write(file_content)
+                                logger.debug(f"[文件处理] 已保存临时文件: {temp_filename}")
+
+                                # 根据文件类型发送不同类型的消息
+                                if file_type and (file_type.startswith('audio/') or ext in ('wav', 'mp3', 'ogg', 'm4a', 'amr')):
+                                    # 音频文件
+                                    logger.info(f"[文件处理] 检测到音频文件，发送语音消息")
+
+                                    # 对于音频文件，可能需要转换格式
+                                    try:
+                                        # 检查是否有ffmpeg
+                                        if shutil.which("ffmpeg"):
+                                            # 转换为mp3格式，这是微信支持较好的格式
+                                            mp3_file = f"{temp_filename}.mp3"
+                                            command = f'ffmpeg -y -i "{temp_filename}" -acodec libmp3lame -ar 44100 -ab 192k "{mp3_file}"'
+                                            logger.debug(f"[文件处理] 执行音频转换命令: {command}")
+
+                                            process = subprocess.run(command, shell=True, check=True, capture_output=True, text=True)
+                                            if process.returncode == 0:
+                                                logger.info(f"[文件处理] 音频转换成功: {mp3_file}")
+
+                                                # 读取转换后的文件
+                                                with open(mp3_file, "rb") as f:
+                                                    converted_audio = f.read()
+
+                                                # 发送转换后的音频
+                                                await bot.send_voice_message(message["FromWxid"], voice=converted_audio, format="mp3")
+                                                logger.info(f"[文件处理] 发送转换后的语音消息成功")
+
+                                                # 删除转换后的文件
+                                                try:
+                                                    os.remove(mp3_file)
+                                                    logger.debug(f"[文件处理] 已删除转换后的音频文件: {mp3_file}")
+                                                except Exception as del_error:
+                                                    logger.debug(f"[文件处理] 删除转换后的音频文件失败: {del_error}")
+                                            else:
+                                                logger.warning(f"[文件处理] 音频转换失败: {process.stderr}")
+                                                # 尝试直接发送原始音频
+                                                await bot.send_voice_message(message["FromWxid"], voice=file_content, format=ext or 'mp3')
+                                                logger.info(f"[文件处理] 发送原始语音消息成功")
+                                        else:
+                                            logger.warning("[文件处理] 未找到ffmpeg，直接发送原始音频")
+                                            await bot.send_voice_message(message["FromWxid"], voice=file_content, format=ext or 'mp3')
+                                            logger.info(f"[文件处理] 发送原始语音消息成功")
+                                    except Exception as audio_error:
+                                        logger.error(f"[文件处理] 处理音频文件失败: {audio_error}")
+                                        logger.error(traceback.format_exc())
+                                        # 尝试直接发送原始音频
+                                        await bot.send_voice_message(message["FromWxid"], voice=file_content, format=ext or 'mp3')
+                                        logger.info(f"[文件处理] 尝试直接发送原始语音消息")
+
+                                elif file_type and (file_type.startswith('image/') or ext in ('jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'svg')):
+                                    # 图片文件
+                                    logger.info(f"[文件处理] 检测到图片文件，发送图片消息")
+                                    await bot.send_image_message(message["FromWxid"], file_content)
+                                    logger.info(f"[文件处理] 发送图片消息成功")
+
+                                elif file_type and (file_type.startswith('video/') or ext in ('mp4', 'avi', 'mov', 'mkv', 'flv', 'webm')):
+                                    # 视频文件
+                                    logger.info(f"[文件处理] 检测到视频文件，发送视频消息")
+                                    await bot.send_video_message(message["FromWxid"], video=file_content, image="None")
+                                    logger.info(f"[文件处理] 发送视频消息成功")
+
+                                else:
+                                    # 其他类型文件，不做处理
+                                    logger.info(f"[文件处理] 检测到其他类型文件: {file_type}，不做处理")
+
+                            except Exception as e:
+                                logger.error(f"[文件处理] 处理文件失败: {e}")
+                                logger.error(traceback.format_exc())
+
+                            finally:
+                                # 无论成功与否，都删除临时文件
+                                try:
+                                    if os.path.exists(temp_filename):
+                                        os.remove(temp_filename)
+                                        logger.debug(f"[文件处理] 已删除临时文件: {temp_filename}")
+                                except Exception as del_error:
+                                    logger.debug(f"[文件处理] 删除临时文件失败: {del_error}")
                         else:
-                            logger.error(f"下载图片失败: HTTP {resp.status}")
-                            await bot.send_text_message(message["FromWxid"], f"下载图片失败: HTTP {resp.status}")
+                            error_text = await resp.text()
+                            logger.error(f"[文件处理] 下载失败: 状态码={resp.status}, 错误={error_text}")
             except Exception as e:
-                logger.error(f"处理图片 {url} 失败: {e}")
-                await bot.send_text_message(message["FromWxid"], f"处理图片失败: {str(e)}")
-
-        # 处理其他类型的链接
-        pattern = r"\]$$(https?:\/\/[^\s$$]+)\)"
-        links = re.findall(pattern, text)
-        for url in links:
-            try:
-                file_content = await self.download_file(url)
-                if file_content:
-                    # 检测文件类型
-                    kind = filetype.guess(file_content)
-                    if kind is None:
-                        # 如果无法检测文件类型，尝试从URL获取
-                        ext = os.path.splitext(url)[1].lower().lstrip('.')
-                        if not ext:
-                            logger.warning(f"无法识别文件类型: {url}")
-                            continue
-                    else:
-                        ext = kind.extension
-
-                    # 根据文件类型发送不同类型的消息
-                    if ext in ('wav', 'mp3', 'ogg', 'm4a'):
-                        await bot.send_voice_message(message["FromWxid"], voice=file_content, format=ext)
-                        logger.info(f"发送语音消息成功，大小: {len(file_content)} 字节")
-                    elif ext in ('jpg', 'jpeg', 'png', 'gif', 'bmp', 'svg'):
-                        await bot.send_image_message(message["FromWxid"], file_content)
-                        logger.info(f"发送图片消息成功，大小: {len(file_content)} 字节")
-                    elif ext in ('mp4', 'avi', 'mov', 'mkv', 'flv'):
-                        await bot.send_video_message(message["FromWxid"], video=file_content, image="None")
-                        logger.info(f"发送视频消息成功，大小: {len(file_content)} 字节")
-                    else:
-                        # 其他类型文件，发送文本通知
-                        file_name = os.path.basename(url)
-                        await bot.send_text_message(message["FromWxid"], f"下载了文件: {file_name}\n类型: {ext}\n大小: {len(file_content)/1024:.2f} KB")
-                        logger.info(f"发送文件通知成功，文件名: {file_name}, 类型: {ext}, 大小: {len(file_content)} 字节")
-            except Exception as e:
-                logger.error(f"处理链接文件 {url} 失败: {e}")
+                logger.error(f"[文件处理] 处理文件链接失败: {e}")
                 logger.error(traceback.format_exc())
-                await bot.send_text_message(message["FromWxid"], f"下载文件 {url} 失败")
 
-        # 识别普通文件链接
+        # 处理可能的其他格式链接 - 由于我们已经处理了标准格式的链接，这部分可以简化
+        other_pattern = r'!?\]\((https?:\/\/[^\s\)]+)\)'
+        other_links = re.findall(other_pattern, text)
+        if other_links:
+            logger.debug(f"[文件处理] 发现其他格式链接: {other_links}")
+            # 不再处理这些链接，因为主要的链接已经在前面处理过了
+
+        # 识别普通文件链接 - 简化处理
         file_pattern = r'https?://[^\s<>"]+?/[^\s<>"]+\.(?:pdf|doc|docx|xls|xlsx|txt|zip|rar|7z|tar|gz)'
         file_links = re.findall(file_pattern, text)
-        for url in file_links:
-            await self.download_and_send_file(bot, message, url)
+        if file_links:
+            logger.debug(f"[文件处理] 发现普通文件链接: {file_links}")
+            # 不再处理这些链接，因为主要的链接已经在前面处理过了
 
         pattern = r'\$\$[^$$]+\]\$\$https?:\/\/[^\s$$]+\)'
         text = re.sub(pattern, '', text)
@@ -1844,12 +1862,15 @@ class Dify(PluginBase):
                                 image_content = await resp.read()
                                 logger.info(f"成功从URL下载图片，大小: {len(image_content)} 字节")
 
+                                # 对于群聊消息，使用群聊ID作为user参数，这样对话会与群聊关联，而不是与个人关联
+                                user_id = message["FromWxid"] if message.get("IsGroup", False) else message["SenderWxid"]
+
                                 # 上传到 Dify
                                 file_info = await self.upload_file_to_dify(
                                     image_content,
                                     f"image_{int(time.time())}.jpg",  # 生成一个有效的文件名
                                     "image/jpeg",  # 根据实际图片类型调整
-                                    message["FromWxid"],
+                                    user_id,  # 使用正确的用户ID
                                     model_config=model_config  # 传递模型配置
                                 )
                                 if file_info:
@@ -1867,12 +1888,15 @@ class Dify(PluginBase):
                 logger.info(f"处理二进制图片数据，大小: {len(image)} 字节")
                 image_content = image
 
+                # 对于群聊消息，使用群聊ID作为user参数，这样对话会与群聊关联，而不是与个人关联
+                user_id = message["FromWxid"] if message.get("IsGroup", False) else message["SenderWxid"]
+
                 # 上传到 Dify
                 file_info = await self.upload_file_to_dify(
                     image_content,
                     f"image_{int(time.time())}.jpg",  # 生成一个有效的文件名
                     "image/jpeg",  # 根据实际图片类型调整
-                    message["FromWxid"],
+                    user_id,  # 使用正确的用户ID
                     model_config=model_config  # 传递模型配置
                 )
                 if file_info:
@@ -1949,12 +1973,7 @@ class Dify(PluginBase):
                   f"错误信息：{err_message}")
         await bot.send_text_message(message["FromWxid"], output)
 
-    @staticmethod
-    async def handle_400(bot: WechatAPIClient, message: dict, resp: aiohttp.ClientResponse):
-        output = (XYBOT_PREFIX +
-                  "🙅对不起，出现错误！\n"
-                  f"错误信息：{(await resp.content.read()).decode('utf-8')}")
-        await bot.send_text_message(message["FromWxid"], output)
+
 
     @staticmethod
     async def handle_500(bot: WechatAPIClient, message: dict):
@@ -1970,7 +1989,7 @@ class Dify(PluginBase):
         await bot.send_text_message(message["FromWxid"], ai_resp)
 
     @staticmethod
-    async def hendle_exceptions(bot: WechatAPIClient, message: dict, model_config=None):
+    async def handle_exceptions(bot: WechatAPIClient, message: dict, model_config=None):
         output = (XYBOT_PREFIX +
                   "🙅对不起，出现错误！\n"
                   f"错误信息：\n"
@@ -2020,7 +2039,9 @@ class Dify(PluginBase):
             with open(mp3_file, "rb") as f:
                 mp3_data = f.read()
             formdata.add_field("file", mp3_data, filename="audio.mp3", content_type="audio/mp3")
-            formdata.add_field("user", message["SenderWxid"])
+            # 对于群聊消息，使用群聊ID作为user参数，这样对话会与群聊关联，而不是与个人关联
+            user_id = message["FromWxid"] if message.get("IsGroup", False) else message["SenderWxid"]
+            formdata.add_field("user", user_id)
             async with aiohttp.ClientSession(proxy=self.http_proxy) as session:
                 async with session.post(audio_to_text_url, headers=headers, data=formdata) as resp:
                     if resp.status == 200:
@@ -2054,7 +2075,16 @@ class Dify(PluginBase):
                 if os.path.exists(temp_file):
                     os.remove(temp_file)
 
-    async def text_to_voice_message(self, bot: WechatAPIClient, message: dict, text: str):
+    async def text_to_voice_message(self, bot: WechatAPIClient, message: dict, text: str = None, message_id: str = None):
+        """
+        将文本转换为语音消息并发送
+
+        Args:
+            bot: WechatAPIClient实例
+            message: 消息字典
+            text: 要转换为语音的文本内容（可选，如果提供message_id则可为None）
+            message_id: Dify生成的消息ID（可选，优先级高于text）
+        """
         try:
             # 使用当前模型的 base-url 构建文本转音频 URL
             model = self.get_user_model(message["SenderWxid"])
@@ -2062,17 +2092,35 @@ class Dify(PluginBase):
             logger.debug(f"使用文本转音频 URL: {text_to_audio_url}")
 
             headers = {"Authorization": f"Bearer {model.api_key}", "Content-Type": "application/json"}
-            data = {"text": text, "user": message["SenderWxid"]}
+
+            # 构建请求数据，支持message_id参数
+            data = {"user": message["SenderWxid"]}
+
+            # 优先使用message_id，如果没有则使用text
+            if message_id:
+                data["message_id"] = message_id
+                logger.debug(f"使用message_id: {message_id}进行文本转语音")
+            elif text:
+                data["text"] = text
+                logger.debug(f"使用text进行文本转语音: {text[:50]}..." if len(text) > 50 else f"使用text进行文本转语音: {text}")
+            else:
+                logger.error("文本转语音失败: 未提供text或message_id参数")
+                await bot.send_text_message(message["FromWxid"], f"{TEXT_TO_VOICE_FAILED}: 未提供文本内容或消息ID")
+                return
+
             async with aiohttp.ClientSession(proxy=self.http_proxy) as session:
                 async with session.post(text_to_audio_url, headers=headers, json=data) as resp:
                     if resp.status == 200:
                         audio = await resp.read()
                         await bot.send_voice_message(message["FromWxid"], voice=audio, format="mp3")
+                        logger.info(f"文本转语音成功，{'使用message_id' if message_id else '使用text'}")
                     else:
-                        logger.error(f"text-to-audio 接口调用失败: {resp.status} - {await resp.text()}")
-                        await bot.send_text_message(message["FromWxid"], TEXT_TO_VOICE_FAILED)
+                        error_text = await resp.text()
+                        logger.error(f"text-to-audio 接口调用失败: {resp.status} - {error_text}")
+                        await bot.send_text_message(message["FromWxid"], f"{TEXT_TO_VOICE_FAILED}: 状态码 {resp.status}")
         except Exception as e:
             logger.error(f"text-to-audio 接口调用异常: {e}")
+            logger.error(traceback.format_exc())
             await bot.send_text_message(message["FromWxid"], f"{TEXT_TO_VOICE_FAILED}: {str(e)}")
 
     @on_image_message(priority=20)
@@ -2166,8 +2214,9 @@ class Dify(PluginBase):
                             md5 = img_element.get('md5')
                             aeskey = img_element.get('aeskey')
                             length = img_element.get('length')
-                            cdnmidimgurl = img_element.get('cdnmidimgurl')
-                            cdnthumburl = img_element.get('cdnthumburl')
+                            # 获取图片URL，但不使用这些变量，避免IDE警告
+                            # cdnmidimgurl = img_element.get('cdnmidimgurl')
+                            # cdnthumburl = img_element.get('cdnthumburl')
 
                             logger.info(f"从XML解析到图片信息: md5={md5}, aeskey={aeskey}, length={length}")
 
@@ -2419,6 +2468,22 @@ class Dify(PluginBase):
             logger.error(f"下载或发送文件失败: {e}")
             logger.error(traceback.format_exc())
 
+    # 添加一个专门处理引用消息的方法
+    @on_xml_message(priority=99)  # 使用最高优先级确保最先处理
+    async def handle_xml_quote(self, bot: WechatAPIClient, message: dict):
+        """专门处理XML格式的引用消息"""
+        if not self.enable:
+            return True
+
+        # 检查是否是引用消息
+        if message.get("Quote"):
+            logger.info("Dify: 检测到XML引用消息，直接处理")
+            # 直接调用引用消息处理方法
+            return await self.handle_quote(bot, message)
+
+        # 不是引用消息，交给下一个处理器处理
+        return True
+
     @on_xml_message(priority=98)  # 使用高优先级确保先处理
     async def handle_xml_file(self, bot: WechatAPIClient, message: dict):
         """处理XML格式的文件消息"""
@@ -2430,11 +2495,6 @@ class Dify(PluginBase):
             content = message.get("Content", "")
             if not content or not isinstance(content, str) or not content.strip().startswith("<"):
                 logger.warning(f"Dify: 消息内容不是XML格式: {content[:100]}")
-                return True
-
-            # 如果是引用消息，检查是否有Quote字段
-            if message.get("Quote"):
-                logger.info("Dify: 检测到引用消息，使用普通文本处理")
                 return True
 
             # 解析XML内容

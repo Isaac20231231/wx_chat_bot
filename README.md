@@ -17,27 +17,46 @@ XXXBot 是一个基于微信的智能机器人系统，通过整合多种 API �
 
 ### 🔄 双协议支持与框架模式
 
-本系统现已支持三种微信协议版本和多种框架模式：
+本系统现已支持多种微信协议版本和框架模式：
 
 #### 协议版本支持
+
+暂时只能使用 Mac 协议
 
 - **849 协议**：适用于 iPad 版本，使用 `/VXAPI` 路径前缀
 - **855 协议**：适用于安卓 PAD 版本，使用 `/api` 路径前缀
 - **ipad 协议**：适用于新版 iPad 协议，使用 `/api` 路径前缀
+- **Mac**：适用于 Mac 协议，使用 `/api` 路径前缀（Mac 登录后请不要使用 PC 登录 bot）
 
-#### 框架模式支持
+#### 框架模式支持（所有协议版本均支持）
 
 - **default**：使用原始框架（默认模式）
 - **dual**：双框架模式，同时运行原始框架和 DOW 框架
 
 通过在 `main_config.toml` 文件中设置 `Protocol.version` 和 `Framework.type` 参数，系统会自动选择相应的服务和 API 路径。详细配置方法请参见[协议配置](#协议配置)部分。
 
+选择不同的协议版本和框架模式，可以满足不同用户的需求，提供更灵活的交互体验。
+
+#### 🔧 协议配置
+
+在 `main_config.toml` 文件中，配置 `Protocol.version` 和 `Framework.type` 参数来选择协议版本和框架模式：
+
+```toml
+[Protocol]
+version = "849"  # 可选值：849, 855, ipad, Mac
+```
+
+- 选择 **849 协议**后，需要在 dow 文件夹中 `config.toml` 文件中设置 `wx849_protocol_version` 为 `849`
+- 选择 **855/ipad/Mac 协议**后，需要在 dow 文件夹中 `config.toml` 文件中设置 `wx849_protocol_version` 为 `ipad`
+
+同时确保已正确配置 `DOW` 框架的相关参数。
+
 #### 📬 回调机制工作原理
 
 系统采用高效的回调机制处理消息，运行流程如下：
 
 1. 原始框架接收微信消息（文本、图片、语音、视频、文件等）
-2. 回调脚本（如`wx849_callback_daemon.py`）监控并解析消息
+2. 回调脚本（如 `wx849_callback_daemon.py`）监控并解析消息
 3. 消息按类型被标记（文本=1，图片=3，语音=34，视频=43，文件=49）
 4. 以 JSON 格式通过 HTTP POST 请求发送至 DOW 框架
 5. DOW 框架接收并处理消息，返回响应
@@ -52,7 +71,7 @@ XXXBot 是一个基于微信的智能机器人系统，通过整合多种 API �
 
 图片和文件消息的处理流程：
 
-- 多媒体消息以 XML 格式传递，包含必要的元数据（如`aeskey`、URL、文件大小等）
+- 多媒体消息以 XML 格式传递，包含必要的元数据（如 `aeskey`、URL、文件大小等）
 - DOW 框架解析 XML 提取关键信息，用于获取原始媒体内容
 - 回复图片时，会将图像转换为 Base64 格式通过 API 接口发送
 - 网络图片 URL 会先下载到本地再处理后发送
@@ -62,7 +81,7 @@ XXXBot 是一个基于微信的智能机器人系统，通过整合多种 API �
 <table>
   <tr>
     <td width="50%">
-      <h3>💬 加入XXXBot交流群</h3>
+      <h3>💬 加入 XXXBot 交流群</h3>
       <p>扫描右侧的二维码加入官方交流群，获取：</p>
       <ul>
         <li>💡 <strong>最新功能更新</strong>和使用技巧</li>
@@ -72,8 +91,8 @@ XXXBot 是一个基于微信的智能机器人系统，通过整合多种 API �
       </ul>
     </td>
     <td width="25%" align="center">
-      <img src="https://github.com/user-attachments/assets/76da4426-9028-452f-9953-7799a613382c" alt="XXXBot微信群" width="220">
-      <p><strong>XXXBot交流群</strong></p>
+      <img src="https://github.com/user-attachments/assets/39f6eff3-bcaa-4bdf-87f2-fd887c26a4e7" alt="关注公众号进群" width="220">
+      <p><strong>XXXBot 交流群</strong></p>
     </td>
     <td width="25%" align="center">
       <img src="https://github.com/user-attachments/assets/2dde3b46-85a1-4f22-8a54-3928ef59b85f" alt="感谢赞助" width="220">
@@ -121,7 +140,7 @@ XXXBot 是一个基于微信的智能机器人系统，通过整合多种 API �
 ### 📦 系统要求
 
 - 🐍 Python 3.11+
-- 📱 微信客户端（支持 PAD 协议或 WeChatAPI）
+- 📱 WX 客户端
 - 🔋 Redis（用于数据缓存）
 - 🎥 FFmpeg（用于语音处理）
 - 🐳 Docker（可选，用于容器化部署）
@@ -157,7 +176,7 @@ XXXBot 是一个基于微信的智能机器人系统，通过整合多种 API �
 
 5. **配置**
 
-   - 复制`main_config.toml.example`为`main_config.toml`并填写配置
+   - 复制 `main_config.toml.example` 为 `main_config.toml` 并填写配置
    - 设置管理员 ID 和其他基本参数
 
    **设置管理员：**
@@ -225,12 +244,13 @@ XXXBot 是一个基于微信的智能机器人系统，通过整合多种 API �
 
    ```toml
    [Protocol]
-   version = "849"  # 可选值: "849", "855" 或 "ipad"
+   version = "849"  # 可选值: "849", "855" 或 "ipad"，"Mac"
    ```
 
    - **849**: 适用于 iPad 版本，使用 `/VXAPI` 路径前缀
    - **855**: 适用于安卓 PAD 版本，使用 `/api` 路径前缀
    - **ipad**: 适用于新版 iPad 协议，使用 `/api` 路径前缀
+   - **Mac**: 适用于 Mac 协议，使用 `/api` 路径前缀（Mac 登录后请不要使用 PC 登录 bot）
 
    系统会根据配置的协议版本自动选择正确的服务路径和 API 路径前缀。如果遇到 API 请求失败的情况，系统会自动尝试使用另一种协议路径，确保功能正常工作。
 
@@ -240,11 +260,10 @@ XXXBot 是一个基于微信的智能机器人系统，通过整合多种 API �
 
    ```toml
    [Framework]
-   type = "default"  # 可选值: "default", "dow" 或 "dual"
+   type = "default"  # 可选值: "default" 或 "dual"
    ```
 
    - **default**: 使用原始框架
-   - **dow**: 仅使用 DOW 框架
    - **dual**: 双框架模式，同时运行原始框架和 DOW 框架（先启动原始框架，然后启动 DOW 框架）
 
    在双框架模式下，系统会先启动原始框架，等待登录成功后再启动 DOW 框架。这样可以同时使用两个框架的功能，但会消耗更多资源。
@@ -257,14 +276,16 @@ XXXBot 是一个基于微信的智能机器人系统，通过整合多种 API �
 
    - ❗ **第一步**：启动 Redis 服务 🔋
 
-     - 进入`849/redis`目录，双击`redis-server.exe`文件
+     - 进入 `849/redis` 目录，双击 `redis-server.exe` 文件
      - 等待窗口显示 Redis 启动成功
 
    - ❗ **第二步**：启动 PAD 服务 📱
 
      - 根据你的协议版本选择相应的服务：
-       - **849 协议（iPad）**：进入`849/pad`目录，双击`linuxService.exe`文件
-       - **855 协议（安卓 PAD）**：进入`849/pad2`目录，双击`linuxService.exe`文件
+       - **849 协议（iPad）**：进入 `849/pad` 目录，双击 `main.exe` 文件
+       - **855 协议（安卓 PAD）**：进入 `849/pad2` 目录，双击 `main.exe` 文件
+       - **ipad 协议（新版 iPad）**：进入 `849/pad3` 目录，双击 `main.exe` 文件
+       - **Mac 协议**：进入 `849/pad3` 目录，双击 `main.exe` 文件
      - 等待窗口显示 PAD 服务启动成功
 
    - ⚠️ 请确保这两个服务窗口始终保持打开状态，不要关闭它们！
@@ -374,16 +395,6 @@ XXXBot 是一个基于微信的智能机器人系统，通过整合多种 API �
 
    我们已经更新了 `docker-compose.yml` 文件，添加了 `pull_policy: always` 设置，确保每次启动容器时都会检查并拉取最新的镜像。更多更新相关的详细信息，请查看 [UPDATE_GUIDE.md](UPDATE_GUIDE.md) 文件。
 
-3. **自定义管理员账号密码**（可选）
-
-   编辑 docker-compose.yml 文件，修改环境变量：
-
-   ```yaml
-   environment:
-     - ADMIN_USERNAME=your_username # 修改为您想要的用户名
-     - ADMIN_PASSWORD=your_password # 修改为您想要的密码
-   ```
-
 ### 🔍 访问后台
 
 - 🌐 打开浏览器访问 `http://localhost:9090` 进入管理界面
@@ -439,15 +450,15 @@ wakeup-words = ["你好小d", "嘿小d"]
 - **查看统计**：发送"我的统计"
 - **聊天排行**：发送"聊天室排行"
 
-### 图片和语音
+### 📷 图片和语音
 
 - 发送图片和文字组合进行图像相关提问
 - 发送语音自动识别并回复
 - 语音回复可根据配置自动开启
 
-## 插件开发
+## 🔌 插件开发
 
-### 插件目录结构
+### 📁 插件目录结构
 
 ```
 plugins/
@@ -458,7 +469,7 @@ plugins/
   │   └── README.md
 ```
 
-### 基本插件模板
+### 📝 基本插件模板
 
 ```python
 from utils.plugin_base import PluginBase
@@ -480,7 +491,7 @@ class YourPlugin(PluginBase):
         pass
 ```
 
-## 常见问题
+## ❓ 常见问题
 
 1. **安装依赖失败** 💻
 
@@ -503,7 +514,7 @@ class YourPlugin(PluginBase):
 4. **Redis 连接错误** 🔋
 
    - 确认 Redis 服务器是否正常运行
-   - 🔴 Windows 用户请确认是否已启动`849/redis`目录中的`redis-server.exe`
+   - 🔴 Windows 用户请确认是否已启动 `849/redis` 目录中的 `redis-server.exe`
    - 检查 Redis 端口和访问权限设置
    - 确认配置文件中的 Redis 端口是否为 6378
    - 💡 提示：Redis 窗口应显示"已就绪接受指令"或类似信息
@@ -530,23 +541,23 @@ class YourPlugin(PluginBase):
    - 检查防火墙设置是否阻止了端口访问
 
 8. **DOW 框架不工作** 🔄
-   - 确认`main_config.toml`中的`Framework.type`设置正确
+   - 确认 `main_config.toml` 中的 `Framework.type` 设置正确
    - 在 dual 模式下，确保原始框架已成功登录
    - 检查回调 URL 配置是否正确(`http://127.0.0.1:8088/wx849/callback`)
    - 验证日志中是否有回调成功的信息
 
-## 技术架构
+## 🏗️ 技术架构
 
 - **后端**：Python FastAPI
 - **前端**：Bootstrap, Chart.js, AOS
 - **数据库**：SQLite (aiosqlite)
 - **缓存**：Redis
-- **微信接口**：PAD 协议或 WeChatAPI
+- **WX 接口**：PAD 协议或 WeChatAPI
 - **外部服务**：Dify API，Google Speech-to-Text
 - **容器化**：Docker
 - **Web 服务**：默认端口 9090，默认账号 admin/admin123
 
-## 项目结构
+## 📂 项目结构
 
 ```
 XXXBot/
@@ -579,7 +590,7 @@ XXXBot/
   └── main_config.toml        # 主配置文件
 ```
 
-## 协议和许可
+## 📜 协议和许可
 
 本项目基于 [MIT 许可证](LICENSE) 开源，您可以自由使用、修改和分发本项目的代码，但需保留原始版权声明。
 
@@ -591,7 +602,7 @@ XXXBot/
 - **请遵守相关法律法规，合法合规使用本项目**
 - **如果您使用了本项目，即表示您已阅读并同意上述免责声明**
 
-## 鸣谢
+## 🙏 鸣谢
 
 本项目的开发离不开以下作者和项目的支持与贡献：
 
@@ -630,7 +641,7 @@ XXXBot/
 
 同时感谢所有其他贡献者和使用的开源项目。
 
-## 联系方式
+## 📞 联系方式
 
 - **GitHub**: [https://github.com/NanSsye](https://github.com/NanSsye)
 - **官方交流群**：请查看上方[快速开始](#快速开始)部分的二维码

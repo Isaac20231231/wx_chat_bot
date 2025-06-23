@@ -1159,6 +1159,10 @@
                         <i class="bi bi-info-circle-fill me-2"></i>
                         请谨慎编辑系统配置文件，错误的配置可能导致系统无法正常运行。保存后需要重启系统才能生效。
                     </div>
+                    <div class="alert alert-warning">
+                        <i class="bi bi-exclamation-triangle-fill me-2"></i>
+                        <strong>注意：</strong>在TOML文件中，如果字符串值包含双引号(")，请手动将其转义为\"，否则可能导致配置文件格式错误。
+                    </div>
                     <textarea id="config-editor" class="form-control" style="height: 400px; font-family: monospace;"></textarea>
                 </div>
             </div>

@@ -2,10 +2,11 @@
 let plugins = [];
 let currentPluginId = null;
 let currentFilter = 'all';
-let currentFramework = 'original'; // 默认显示原始框架插件
+let currentFramework = 'original'; // 默认显示原始框架
 let configModal = null;
 let uploadModal = null;
 let marketPlugins = [];
+let sortedPlugins = []; // 添加全局变量
 
 // 一些辅助函数
 function getFieldLabel(field) {
@@ -87,8 +88,8 @@ function closeModalManually(modalId) {
 // 插件市场API配置
 const PLUGIN_MARKET_API = {
     BASE_URL: 'http://xianan.xin:1562/api',
-    LIST: '/plugins?status=approved',
-    SUBMIT: '/plugins',
+    LIST: '/plugins/?status=approved',  // 添加尾部斜杠，避免重定向
+    SUBMIT: '/plugins/',  // 添加尾部斜杠，避免重定向
     INSTALL: '/plugins/install/',
     CACHE_KEY: 'xybot_plugin_market_cache',
     CACHE_EXPIRY: 3600000 // 缓存有效期1小时（毫秒）
@@ -108,20 +109,34 @@ document.addEventListener('DOMContentLoaded', function() {
     });
 
     // 为插件过滤按钮添加点击事件
-    const filterButtons = document.querySelectorAll('.plugin-filter .btn-group .btn');
+    const filterButtons = document.querySelectorAll('.filter-section .btn-group .btn');
     if (filterButtons.length > 0) {
         filterButtons.forEach(button => {
             button.addEventListener('click', function() {
-                // 移除所有按钮的active类
-                filterButtons.forEach(btn => btn.classList.remove('active'));
+                // 确定是过滤器按钮还是框架按钮
+                const isFilterButton = this.hasAttribute('data-filter');
+                const targetButtons = isFilterButton ? 
+                    document.querySelectorAll('.filter-section .btn-group .btn[data-filter]') : 
+                    document.querySelectorAll('.filter-section .btn-group .btn[data-framework]');
+                
+                // 只移除相同类型按钮的active类
+                targetButtons.forEach(btn => btn.classList.remove('active'));
+                
                 // 添加当前按钮的active类
                 this.classList.add('active');
-                // 获取过滤类型
-                const filter = this.getAttribute('data-filter');
-                // 更新当前过滤器
-                currentFilter = filter;
-                // 过滤插件
-                filterPlugins(filter);
+                
+                // 获取过滤类型或框架类型
+                if (isFilterButton) {
+                    const filter = this.getAttribute('data-filter');
+                    // 更新当前过滤器
+                    currentFilter = filter;
+                    // 过滤插件
+                    filterPlugins(filter);
+                } else {
+                    const framework = this.getAttribute('data-framework');
+                    // 加载指定框架的插件
+                    loadPlugins(framework);
+                }
             });
         });
         console.log('插件过滤按钮事件已添加');
@@ -212,25 +227,7 @@ document.addEventListener('DOMContentLoaded', function() {
         document.getElementById('plugin-config-error').style.display = 'none';
     });
 
-    // 为框架选择按钮添加点击事件
-    const frameworkButtons = document.querySelectorAll('[data-framework]');
-    if (frameworkButtons.length > 0) {
-        frameworkButtons.forEach(button => {
-            button.addEventListener('click', function() {
-                // 移除所有按钮的active类
-                frameworkButtons.forEach(btn => btn.classList.remove('active'));
-                // 添加当前按钮的active类
-                this.classList.add('active');
-                // 获取框架类型
-                const framework = this.getAttribute('data-framework');
-                // 加载指定框架的插件
-                loadPlugins(framework);
-            });
-        });
-        console.log('框架选择按钮事件已添加');
-    } else {
-        console.warn('找不到框架选择按钮，无法添加事件监听器');
-    }
+    // 框架选择按钮的事件监听器现在已经合并到过滤按钮的事件处理中
 });
 
 // 检查网络连接
@@ -402,7 +399,9 @@ function renderPluginList(pluginsList) {
     // 为每个插件创建卡片并添加到网格布局中
     pluginsList.forEach(plugin => {
         const statusClass = plugin.enabled ? 'success' : 'secondary';
-        const statusText = plugin.enabled ? '已启用' : '已禁用';
+        const statusIcon = plugin.enabled ? 
+            '<i class="bi bi-check-circle-fill text-success status-icon" title="已启用"></i>' : 
+            '<i class="bi bi-x-circle-fill text-secondary status-icon" title="已禁用"></i>';
 
         // 检查插件是否有更新
         let hasUpdate = false;
@@ -449,8 +448,8 @@ function renderPluginList(pluginsList) {
             <div class="card-header p-3 pt-4 pb-4 bg-gradient-light border-0 position-relative" style="background: linear-gradient(135deg, #f8f9fa, #e9ecef);">
                 <div class="plugin-status-container">
                     ${frameworkBadge}
-                    ${hasUpdate ? `<span class="badge bg-warning me-2" title="可更新到: v${marketVersion}">有更新</span>` : ''}
-                    <span class="badge bg-${statusClass} status-badge">${statusText}</span>
+                    ${hasUpdate ? `<i class="bi bi-arrow-up-circle-fill text-warning status-icon me-2" title="可更新到: v${marketVersion}"></i>` : ''}
+                    ${statusIcon}
                     <div class="form-check form-switch plugin-switch ms-2">
                         <input class="form-check-input plugin-toggle" type="checkbox" id="toggle-${plugin.id}" ${plugin.enabled ? 'checked' : ''} data-plugin-id="${plugin.id}">
                         <label class="form-check-label visually-hidden" for="toggle-${plugin.id}">启用/禁用</label>
@@ -557,7 +556,7 @@ function renderPluginList(pluginsList) {
                 z-index: 10;
                 background-color: rgba(255, 255, 255, 0.8);
                 border-radius: 20px;
-                padding: 2px 4px;
+                padding: 2px 8px;
                 box-shadow: 0 2px 4px rgba(0,0,0,0.05);
             }
             #plugin-list .plugin-switch {
@@ -572,15 +571,24 @@ function renderPluginList(pluginsList) {
                 margin: 0;
                 box-shadow: 0 2px 4px rgba(0,0,0,0.1);
             }
-            #plugin-list .status-badge {
-                font-size: 0.7rem;
-                padding: 0.25em 0.6em;
-                font-weight: 500;
-                border-radius: 20px;
-                vertical-align: middle;
-                display: inline-block;
-                min-width: 60px;
-                text-align: center;
+            #plugin-list .status-icon {
+                font-size: 1.2rem;
+                margin-right: 4px;
+                line-height: 1;
+                display: flex;
+                align-items: center;
+            }
+            #plugin-list .bi-check-circle-fill,
+            #plugin-list .bi-x-circle-fill, 
+            #plugin-list .bi-arrow-up-circle-fill {
+                font-size: 1.1rem;
+                line-height: 1;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                width: 22px;
+                height: 22px;
+                cursor: help;
             }
             #plugin-list .text-truncate {
                 overflow: hidden;
@@ -1461,6 +1469,26 @@ function renderMarketPlugins(marketPluginsList) {
         return;
     }
 
+    // 对插件列表进行排序
+    // 1. 需要更新的插件放在前面
+    // 2. 然后按照返回顺序的倒序排列（最新添加的先显示）
+    sortedPlugins = [...marketPluginsList].sort((a, b) => {
+        // 检查是否有插件需要更新
+        const aInstalled = plugins && Array.isArray(plugins) ? plugins.find(p => p.name === a.name) : null;
+        const bInstalled = plugins && Array.isArray(plugins) ? plugins.find(p => p.name === b.name) : null;
+        
+        const aHasUpdate = aInstalled && compareVersions(a.version, aInstalled.version || '1.0.0') > 0;
+        const bHasUpdate = bInstalled && compareVersions(b.version, bInstalled.version || '1.0.0') > 0;
+        
+        // 如果一个有更新，一个没有，有更新的放前面
+        if (aHasUpdate && !bHasUpdate) return -1;
+        if (!aHasUpdate && bHasUpdate) return 1;
+        
+        // 如果更新状态相同，按照原始列表的倒序排列（最新的先显示）
+        // 假设列表中的顺序代表了添加时间，原始索引越大表示越新
+        return marketPluginsList.indexOf(b) - marketPluginsList.indexOf(a);
+    });
+
     // 重置市场列表HTML
     marketList.innerHTML = '';
 
@@ -1469,7 +1497,7 @@ function renderMarketPlugins(marketPluginsList) {
     gridContainer.id = 'market-grid';
     marketList.appendChild(gridContainer);
 
-    marketPluginsList.forEach((plugin, index) => {
+    sortedPlugins.forEach((plugin, index) => {
         // 将标签字符串转换为数组
         const tags = plugin.tags ? plugin.tags.split(',') : [];
 
@@ -1500,6 +1528,22 @@ function renderMarketPlugins(marketPluginsList) {
             }
         }
 
+        // 生成状态图标HTML
+        const statusIcons = isInstalled ? 
+            (hasUpdate ? 
+                `<i class="bi bi-arrow-up-circle-fill text-warning status-icon me-2" title="可更新到: v${plugin.version}，当前版本: v${installedVersion}"></i>
+                 <i class="bi bi-check-circle-fill text-success status-icon" title="已安装"></i>` : 
+                `<i class="bi bi-check-circle-fill text-success status-icon" title="已安装"></i>`) 
+            : '';
+
+        // 添加特殊标记 - 更新提示
+        let updateBadge = '';
+        if (hasUpdate) {
+            updateBadge = `<div class="position-absolute start-0 top-0 p-2">
+                <span class="badge bg-warning">可更新</span>
+            </div>`;
+        }
+
         // 生成渐变色背景（根据插件名生成一个稳定的颜色）
         const colors = [
             ['#1abc9c', '#16a085'], // 绿松石
@@ -1515,11 +1559,18 @@ function renderMarketPlugins(marketPluginsList) {
         // 创建卡片元素
         const cardElement = document.createElement('div');
         cardElement.className = 'market-card';
+        
+        // 添加额外的类以便于样式区分
+        if (hasUpdate) {
+            cardElement.classList.add('has-update');
+        }
 
         // 生成卡片HTML
         cardElement.innerHTML = `
-            <div class="card h-100 shadow border-0 rounded-4 overflow-hidden">
-                <div class="card-header p-3 bg-gradient-light border-0" style="background: linear-gradient(135deg, #f8f9fa, #e9ecef);">
+            <div class="card h-100 shadow border-0 rounded-4 overflow-hidden ${hasUpdate ? 'border border-warning' : ''}">
+                <div class="card-header p-3 bg-gradient-light border-0 position-relative" style="background: linear-gradient(135deg, #f8f9fa, #e9ecef);">
+                    ${statusIcons ? `<div class="plugin-status-container">${statusIcons}</div>` : ''}
+                    ${updateBadge}
                     <div class="d-flex align-items-center">
                         <div class="plugin-icon rounded-circle shadow-sm" style="background: linear-gradient(135deg, ${gradientColors[0]}, ${gradientColors[1]});">
                             <i class="bi bi-puzzle"></i>
@@ -1527,14 +1578,6 @@ function renderMarketPlugins(marketPluginsList) {
                         <div class="ms-3" style="min-width: 0; flex: 1;">
                             <h5 class="card-title mb-0 fw-bold text-truncate" title="${plugin.name}">${plugin.name}</h5>
                             <div class="text-muted small">v${plugin.version}</div>
-                        </div>
-                        <div class="ms-auto d-flex flex-column align-items-end">
-                            ${isInstalled ?
-                                (hasUpdate ?
-                                    `<span class="badge bg-warning mb-1" title="当前版本: v${installedVersion}">有更新</span>
-                                     <span class="badge bg-success">已安装</span>` :
-                                    '<span class="badge bg-success">已安装</span>') :
-                                ''}
                         </div>
                     </div>
                 </div>
@@ -1546,6 +1589,10 @@ function renderMarketPlugins(marketPluginsList) {
                             <i class="bi bi-person me-1"></i>${plugin.author}
                         </div>
                         <div class="d-flex justify-content-end">
+                            ${plugin.github_url ? `
+                            <a href="${plugin.github_url}" target="_blank" class="btn btn-sm btn-outline-secondary rounded-pill me-2" title="访问GitHub仓库">
+                                <i class="bi bi-github me-1"></i>GitHub
+                            </a>` : ''}
                             <button class="btn ${isInstalled ? (hasUpdate ? 'btn-outline-warning' : 'btn-outline-primary') : 'btn-primary'} btn-sm rounded-pill btn-install-plugin" data-plugin-index="${index}">
                                 <i class="bi ${isInstalled ? (hasUpdate ? 'bi-arrow-up-circle' : 'bi-arrow-repeat') : 'bi-download'} me-1"></i>${isInstalled ? (hasUpdate ? '更新' : '重新安装') : '安装'}
                             </button>
@@ -1577,8 +1624,6 @@ function renderMarketPlugins(marketPluginsList) {
             max-height: 3em;
         }
         #market-list .plugin-icon {
-            width: 45px;
-            height: 45px;
             display: flex;
             align-items: center;
             justify-content: center;
@@ -1627,6 +1672,56 @@ function renderMarketPlugins(marketPluginsList) {
         .bg-gradient-light {
             background: linear-gradient(135deg, #f8f9fa, #e9ecef);
         }
+        #market-list .plugin-status-icons {
+            display: flex;
+            align-items: center;
+        }
+        #market-list .status-icon {
+            font-size: 1.1rem;
+            line-height: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 22px;
+            height: 22px;
+            cursor: help;
+        }
+        #market-list .bi-check-circle-fill,
+        #market-list .bi-x-circle-fill, 
+        #market-list .bi-arrow-up-circle-fill {
+            font-size: 1.1rem;
+            line-height: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 22px;
+            height: 22px;
+            cursor: help;
+        }
+        #market-list .plugin-status-container {
+            position: absolute;
+            top: 12px;
+            right: 12px;
+            display: flex;
+            align-items: center;
+            z-index: 10;
+            background-color: rgba(255, 255, 255, 0.8);
+            border-radius: 20px;
+            padding: 2px 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        }
+        #market-list .has-update .card {
+            box-shadow: 0 5px 15px rgba(255, 193, 7, 0.2);
+            border: 1px solid rgba(255, 193, 7, 0.5) !important;
+        }
+        #market-list .has-update .card:hover {
+            box-shadow: 0 15px 30px rgba(255, 193, 7, 0.3) !important;
+        }
+        #market-list .plugin-tags {
+            min-height: 28px;
+            display: flex;
+            flex-wrap: wrap;
+        }
     `;
     document.head.appendChild(styleEl);
 
@@ -1634,7 +1729,7 @@ function renderMarketPlugins(marketPluginsList) {
     document.querySelectorAll('.btn-install-plugin').forEach(button => {
         button.addEventListener('click', function() {
             const index = parseInt(this.getAttribute('data-plugin-index'));
-            const plugin = marketPlugins[index];
+            const plugin = sortedPlugins[index];
             if (plugin) {
                 installPlugin(plugin);
             }
@@ -1883,7 +1978,17 @@ function storeOfflineSubmission(pluginData, tempId) {
 async function installPlugin(plugin) {
     return new Promise(async (resolve, reject) => {
         // 查找安装按钮（如果存在）
-        const button = document.querySelector(`.btn-install-plugin[data-plugin-index="${marketPlugins.indexOf(plugin)}"]`);
+        let index = -1;
+        let button = null;
+        
+        // 安全地查找按钮索引
+        if (Array.isArray(sortedPlugins) && sortedPlugins.length > 0) {
+            index = sortedPlugins.findIndex(p => p.name === plugin.name);
+            if (index >= 0) {
+                button = document.querySelector(`.btn-install-plugin[data-plugin-index="${index}"]`);
+            }
+        }
+        
         const originalText = button ? button.innerHTML : null;
 
         // 显示加载状态

@@ -35,6 +35,10 @@ debug = true
 version = "v1.0.0"                    # 版本号，请勿修改
 ignore-protection = true             # 是否忽略风控保护机制，建议保持false
 
+# 群聊唤醒词设置
+enable-group-wakeup = true           # 是否启用群聊唤醒词功能
+group-wakeup-words = ["bot", "机器人"]  # 群聊唤醒词列表，消息需以这些词开头才会触发处理
+
 # GitHub加速服务设置
 # 可选值: "", "https://ghfast.top/", "https://gh-proxy.com/", "https://mirror.ghproxy.com/"
 # 空字符串表示直连不使用加速

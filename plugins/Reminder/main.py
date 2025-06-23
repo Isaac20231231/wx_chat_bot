@@ -558,17 +558,11 @@ class Reminder(PluginBase):
             logger.error(f"获取用户 {wxid} 昵称失败: {e}")
             nickname = "用户"
 
-        output = f"⏰-----老夏的记录-----⏰\n"
-        output += "⏳达到时间啦⏳\n"
-        output += f"🆔任务ID：{reminder_id}\n"
-        output += f"🗒️内 容：{content}\n"
-        output += f"⏰提醒时间：{datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
-        output += "——————————————————\n"
+        # 只发送实际内容，不包含其他描述文字
+        output = content
         
-        if chat_id.endswith("@chatroom"):
-            await bot.send_at_message(chat_id, output, [wxid])
-        else:
-            await bot.send_text_message(chat_id, output)
+        # 不再使用@消息，直接发送普通文本消息
+        await bot.send_text_message(chat_id, output)
 
     async def _check_point(self, bot: WechatAPIClient, message: dict) -> bool:
         wxid = message["SenderWxid"]

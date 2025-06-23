@@ -132,8 +132,26 @@ config = {
     "password": "admin123",
     "debug": False,
     "secret_key": "xybotv2_admin_secret_key",
-    "max_history": 1000
+    "max_history": 1000,
+    "log_level": "INFO"  # 默认日志级别
 }
+
+# 设置日志级别函数
+def set_log_level(level):
+    """设置日志级别"""
+    # 注意：此函数不再重新配置日志处理器，只是更新日志级别
+    # 因为日志处理器已经在main.py中配置好了
+
+    # 获取所有现有的日志处理器
+    handlers = logger._core.handlers
+
+    # 更新控制台日志处理器的级别
+    for handler_id, handler in handlers.items():
+        # 只更新控制台日志处理器的级别，文件日志处理器保持DEBUG级别
+        if hasattr(handler, "_sink") and handler._sink == sys.stderr:
+            handler._level = logger.level(level).no
+
+    logger.info(f"管理后台日志级别已设置为: {level}")
 
 # WebSocket连接
 active_connections: List[WebSocket] = []
@@ -182,6 +200,10 @@ def load_config():
                         config["password"] = admin_config["password"]
                     if "debug" in admin_config:
                         config["debug"] = admin_config["debug"]
+                    if "log_level" in admin_config:
+                        config["log_level"] = admin_config["log_level"]
+                        # 使用设置日志级别函数
+                        set_log_level(admin_config["log_level"])
                     logger.info(f"从main_config.toml加载管理后台配置: {main_config_path}")
         else:
             # 如果main_config.toml不存在或没有Admin部分，尝试从config.json加载
@@ -2414,8 +2436,8 @@ except:
     # 插件市场API配置
     PLUGIN_MARKET_API = {
         "BASE_URL": "http://xianan.xin:1562/api",  # 从https改为http
-        "LIST": "/plugins?status=approved",
-        "SUBMIT": "/plugins",
+        "LIST": "/plugins/?status=approved",  # 添加尾部斜杠，避免重定向
+        "SUBMIT": "/plugins/",  # 添加尾部斜杠，避免重定向
         "INSTALL": "/plugins/install/",
         "CACHE_FILE": os.path.join(current_dir, "_cache", "plugin_market.json"),
         "CACHE_DIR": os.path.join(current_dir, "_cache"),
@@ -2487,7 +2509,8 @@ except:
                     # 请求远程API
                     response = await client.get(
                         f"{PLUGIN_MARKET_API['BASE_URL']}{PLUGIN_MARKET_API['LIST']}",
-                        headers=headers
+                        headers=headers,
+                        follow_redirects=True  # 允许重定向
                     )
 
                     response.raise_for_status()
@@ -2595,7 +2618,8 @@ except:
                     response = await client.post(
                         f"{PLUGIN_MARKET_API['BASE_URL']}{PLUGIN_MARKET_API['SUBMIT']}",
                         headers=headers,
-                        json=data
+                        json=data,
+                        follow_redirects=True  # 允许重定向
                     )
 
                     response.raise_for_status()
@@ -2802,7 +2826,8 @@ except:
                             response = await client.post(
                                 f"{PLUGIN_MARKET_API['BASE_URL']}{PLUGIN_MARKET_API['SUBMIT']}",
                                 headers=headers,
-                                json=data
+                                json=data,
+                                follow_redirects=True  # 允许重定向
                             )
 
                             if response.status_code == 200:
@@ -2839,7 +2864,8 @@ except:
                         # 请求远程API
                         response = await client.get(
                             f"{PLUGIN_MARKET_API['BASE_URL']}{PLUGIN_MARKET_API['LIST']}",
-                            headers=headers
+                            headers=headers,
+                            follow_redirects=True  # 允许重定向
                         )
 
                         if response.status_code == 200:
@@ -3496,6 +3522,9 @@ except:
             os.makedirs(os.path.dirname(full_path), exist_ok=True)
 
             # 写入文件内容
+            # 我们不再自动转义TOML文件中的双引号，因为这会破坏文件格式
+            # 对于通知设置等特定API，我们在API层面处理双引号转义
+
             with open(full_path, 'w', encoding='utf-8') as f:
                 f.write(content)
 
@@ -6957,9 +6986,13 @@ async def api_update_notification_settings(request: Request):
                             elif isinstance(sub_value, (int, float)):
                                 f.write(f"{sub_key} = {sub_value}\n")
                             else:
-                                f.write(f"{sub_key} = \"{sub_value}\"\n")
+                                # 转义字符串中的双引号，防止TOML格式错误
+                                escaped_value = str(sub_value).replace('"', '\\"')
+                                f.write(f"{sub_key} = \"{escaped_value}\"\n")
                     else:
-                        f.write(f"{key} = \"{value}\"\n")
+                        # 转义字符串中的双引号，防止TOML格式错误
+                        escaped_value = str(value).replace('"', '\\"')
+                        f.write(f"{key} = \"{escaped_value}\"\n")
                 f.write("\n")
 
         # 重新加载通知服务
@@ -7150,6 +7183,10 @@ def start_server(host_arg=None, port_arg=None, username_arg=None, password_arg=N
         config["password"] = password_arg
     if debug_arg is not None:
         config["debug"] = debug_arg
+
+    # 设置日志级别
+    if "log_level" in config:
+        set_log_level(config["log_level"])
 
     # 初始化应用
     init_app()
@@ -7530,14 +7567,15 @@ def get_bot(wxid):
                 async with aiohttp.ClientSession() as session:
                     try:
                         # 使用插件市场API配置
-                        url = f"{PLUGIN_MARKET_API['BASE_URL']}/plugins/submit"
+                        url = f"{PLUGIN_MARKET_API['BASE_URL']}/plugins/submit/"  # 添加尾部斜杠，避免重定向
                         logger.info(f"正在同步插件到服务器: {url}")
 
                         async with session.post(
                             url,
                             json=plugin_data,
                             timeout=10,
-                            ssl=False  # 明确指定不使用SSL
+                            ssl=False,  # 明确指定不使用SSL
+                            allow_redirects=True  # 允许重定向
                         ) as response:
                             if response.status == 200:
                                 # 删除本地文件
@@ -7555,13 +7593,20 @@ def get_bot(wxid):
         try:
             async with aiohttp.ClientSession() as session:
                 try:
-                    # 使用插件市场API配置
-                    url = f"{PLUGIN_MARKET_API['BASE_URL']}/plugins"
+                    # 使用插件市场API配置，使用正确的URL格式
+                    url = f"{PLUGIN_MARKET_API['BASE_URL']}{PLUGIN_MARKET_API['LIST']}"
+                    # 添加尾部斜杠以避免重定向（如果没有查询参数）
+                    if not url.endswith('/') and '?' not in url:
+                        url += '/'
                     logger.info(f"正在缓存插件市场数据: {url}")
 
-                    async with session.get(url, timeout=10, ssl=False) as response:
+                    async with session.get(url, timeout=10, ssl=False, allow_redirects=True) as response:
                         if response.status == 200:
                             data = await response.json()
+
+                            # 确保缓存目录存在
+                            cache_dir = os.path.dirname(os.path.join(current_dir, 'plugin_market_cache.json'))
+                            os.makedirs(cache_dir, exist_ok=True)
 
                             # 保存到本地缓存
                             cache_path = os.path.join(current_dir, 'plugin_market_cache.json')
@@ -7599,7 +7644,7 @@ def get_bot(wxid):
     # 插件市场API配置
     PLUGIN_MARKET_API = {
         "BASE_URL": "http://xianan.xin:1562/api",  # 从https改为http
-        "LIST": "/plugins?status=approved",
+        "LIST": "/plugins/?status=approved",  # 添加尾部斜杠，避免重定向
         "DETAIL": "/plugins/",
         "INSTALL": "/plugins/install/",
     }

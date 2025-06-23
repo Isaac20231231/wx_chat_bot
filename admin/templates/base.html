@@ -9,21 +9,21 @@
     <link rel="icon" href="/static/img/favicon.ico" type="image/x-icon">
     <link rel="shortcut icon" href="/static/img/favicon.ico" type="image/x-icon">
 
-    <!-- 更新到Bootstrap 5.3版本 -->
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <!-- 使用本地的bootstrap -->
+    <link href="/static/css/lib/bootstrap.min.css" rel="stylesheet">
 
     <!-- Bootstrap图标 -->
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css" rel="stylesheet">
+    <link href="/static/css/lib/bootstrap-icons.css" rel="stylesheet">
 
     <!-- 添加动画库 -->
-    <link href="https://cdn.jsdelivr.net/npm/animate.css@4.1.1/animate.min.css" rel="stylesheet">
+    <link href="/static/css/lib/animate.min.css" rel="stylesheet">
 
     <!-- 添加AOS滚动动画库 -->
-    <link href="https://cdn.jsdelivr.net/npm/aos@2.3.4/dist/aos.css" rel="stylesheet">
+    <link href="/static/css/lib/aos.css" rel="stylesheet">
 
-    <!-- 设计系统字体 -->
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-    <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&display=swap" rel="stylesheet">
+    <!-- 设计系统字体 - 使用本地字体 -->
+    <link href="/static/css/lib/inter.css" rel="stylesheet">
+    <link href="/static/css/lib/roboto.css" rel="stylesheet">
 
     <!-- 添加自定义CSS -->
     <link href="/static/css/admin.css" rel="stylesheet">
@@ -482,15 +482,15 @@
         <!-- 通知会动态添加到这里 -->
     </div>
 
-    <!-- Bootstrap JS -->
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <!-- 本地JS库 -->
+    <script src="/static/js/lib/bootstrap.bundle.min.js"></script>
 
-    <!-- 加载AOS滚动动画库 -->
-    <script src="https://cdn.jsdelivr.net/npm/aos@2.3.4/dist/aos.js"></script>
+    <!-- AOS滚动动画库 -->
+    <script src="/static/js/lib/aos.js"></script>
 
-    <!-- 加载Chart.js图表库 -->
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.0.1/dist/chart.umd.min.js"></script>
-
+    <!-- Chart.js图表库 -->
+    <script src="/static/js/lib/chart.umd.min.js"></script>
+    
     <!-- 自定义JS -->
     <script>
         document.addEventListener('DOMContentLoaded', function() {
@@ -791,6 +791,10 @@
 
                     // 检查是否有更新且版本号不同
                     if (data.success && data.update_available && data.latest_version !== currentVersion) {
+                        // 检查是否已经选择"不再提醒"此版本
+                        const ignoredVersion = localStorage.getItem('ignoreUpdateVersion');
+                        const shouldShowModal = !ignoredVersion || ignoredVersion !== data.latest_version;
+
                         // 更新版本信息显示
                         const updateContainer = document.getElementById('update-container');
                         const latestVersionSpan = document.getElementById('latest-version');
@@ -806,13 +810,19 @@
                         updateContainer.setAttribute('style', 'display: flex !important;');
                         updateContainer.classList.add('d-flex');
 
-                        // 显示更新内容弹窗
-                        showUpdateContentModal(data.latest_version, data.update_description);
+                        // 只有在未选择"不再提醒"或手动检查时才显示更新内容弹窗
+                        if (shouldShowModal || isManualCheck) {
+                            // 显示更新内容弹窗
+                            showUpdateContentModal(data.latest_version, data.update_description);
 
-                        // 如果是手动检查，清除弹窗显示状态，以便下次自动显示
-                        if (isManualCheck) {
-                            localStorage.removeItem('updateModalShown');
-                            showToast('发现新版本', `有新版本可用: ${data.latest_version}`, 'success');
+                            // 如果是手动检查，清除弹窗显示状态和忽略标记
+                            if (isManualCheck) {
+                                localStorage.removeItem('updateModalShown');
+                                localStorage.removeItem('ignoreUpdateVersion'); // 手动检查时清除忽略标记
+                                showToast('发现新版本', `有新版本可用: ${data.latest_version}`, 'success');
+                            }
+                        } else {
+                            console.log('用户已选择不再提醒此版本更新:', data.latest_version);
                         }
 
                         // 初始化工具提示
@@ -960,8 +970,23 @@
                 updateContentElement.innerHTML = '<div class="text-center py-4"><i class="bi bi-info-circle text-muted fs-1 mb-3"></i><p class="text-muted">暂无详细的更新内容描述</p></div>';
             }
 
+            // 重置"不再提醒"复选框
+            document.getElementById('dont-remind-again').checked = false;
+
             // 显示模态框
-            const modal = new bootstrap.Modal(document.getElementById('update-content-modal'));
+            const modalElement = document.getElementById('update-content-modal');
+            const modal = new bootstrap.Modal(modalElement);
+
+            // 添加模态框关闭事件监听器
+            modalElement.addEventListener('hidden.bs.modal', function () {
+                // 检查"不再提醒"复选框是否被勾选
+                if (document.getElementById('dont-remind-again').checked) {
+                    // 保存当前版本信息到localStorage，标记为"不再提醒"
+                    localStorage.setItem('ignoreUpdateVersion', latestVersion);
+                    console.log('用户选择不再提醒此版本更新:', latestVersion);
+                }
+            }, { once: true }); // 只执行一次
+
             modal.show();
         }
 
@@ -1021,9 +1046,13 @@
                         updateContainer.setAttribute('style', 'display: flex !important;');
                         updateContainer.classList.add('d-flex');
 
+                        // 检查是否已经选择"不再提醒"此版本
+                        const ignoredVersion = localStorage.getItem('ignoreUpdateVersion');
+                        const shouldShowModal = !ignoredVersion || ignoredVersion !== updateInfo.latest_version;
+
                         // 显示更新内容弹窗，延迟3秒显示，确保页面已完全加载
-                        // 并且仅在首次加载时显示一次
-                        if (!localStorage.getItem('updateModalShown')) {
+                        // 并且仅在首次加载时显示一次，且未选择"不再提醒"
+                        if (!localStorage.getItem('updateModalShown') && shouldShowModal) {
                             setTimeout(() => {
                                 // 检查必要的元素是否存在
                                 const modalElement = document.getElementById('update-content-modal');
@@ -1035,6 +1064,8 @@
                                     localStorage.setItem('updateModalShown', 'true');
                                 }
                             }, 3000);
+                        } else if (!shouldShowModal) {
+                            console.log('用户已选择不再提醒此版本更新:', updateInfo.latest_version);
                         }
                     } else {
                         // 如果版本相同，清除存储的更新信息
@@ -1103,13 +1134,21 @@
                         </div>
                     </div>
                 </div>
-                <div class="modal-footer justify-content-end border-0 pt-0 pb-3">
-                    <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal" style="padding: 0.375rem 0.75rem;">
-                        <i class="bi bi-x-circle me-1"></i>关闭
-                    </button>
-                    <button type="button" class="btn btn-outline-primary" id="modal-update-now-btn" style="padding: 0.375rem 0.75rem;">
-                        <i class="bi bi-cloud-download me-1"></i>立即更新
-                    </button>
+                <div class="modal-footer justify-content-between border-0 pt-0 pb-3">
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" id="dont-remind-again">
+                        <label class="form-check-label" for="dont-remind-again">
+                            不再提醒此版本
+                        </label>
+                    </div>
+                    <div>
+                        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal" style="padding: 0.375rem 0.75rem;">
+                            <i class="bi bi-x-circle me-1"></i>关闭
+                        </button>
+                        <button type="button" class="btn btn-outline-primary" id="modal-update-now-btn" style="padding: 0.375rem 0.75rem;">
+                            <i class="bi bi-cloud-download me-1"></i>立即更新
+                        </button>
+                    </div>
                 </div>
             </div>
         </div>

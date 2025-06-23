@@ -41,7 +41,7 @@ DOW_CALLBACK_KEY = ""  # 从DOW框架启动日志中获取，或在配置中设�
 config_file = "wx849_callback_config.json"
 if os.path.exists(config_file):
     try:
-        with open(config_file, "r", encoding="utf-8") as f:
+        with open(config_file, "r", encoding="utf-8-sig") as f:  # 修改这里，使用utf-8-sig处理UTF-8 BOM
             config = json.load(f)
             DOW_CALLBACK_URL = config.get("callback_url", DOW_CALLBACK_URL)
             DOW_CALLBACK_KEY = config.get("callback_key", DOW_CALLBACK_KEY)
@@ -63,6 +63,7 @@ class MessageMonitor:
     def __init__(self):
         self.is_running = True
         self.last_check_time = 0
+        self.last_file_scan_time = time.time()  # 添加上次扫描文件的时间
 
         # 消息文件路径
         self.message_file_paths = [
@@ -76,14 +77,19 @@ class MessageMonitor:
         self.file_positions = {}
         # 扩展文件路径模式
         self.actual_file_paths = []
+        self._scan_log_files()  # 提取为单独方法
+
+        logger.info(f"监控的日志文件: {self.actual_file_paths}")
+
+    def _scan_log_files(self):
+        """扫描并更新日志文件列表"""
         for pattern in self.message_file_paths:
             matching_files = glob.glob(pattern)
             for file_path in matching_files:
                 if os.path.exists(file_path) and file_path not in self.actual_file_paths:
                     self.actual_file_paths.append(file_path)
                     self.file_positions[file_path] = os.path.getsize(file_path)
-
-        logger.info(f"监控的日志文件: {self.actual_file_paths}")
+                    logger.info(f"添加日志文件到监控列表: {file_path}")
 
     def start(self):
         """启动监控"""
@@ -109,6 +115,26 @@ class MessageMonitor:
 
     def check_message_files(self):
         """检查消息文件变化"""
+        # 定期重新扫描日志文件（每10分钟）
+        current_time = time.time()
+        if current_time - self.last_file_scan_time > 600:  # 10分钟检查一次
+            self.last_file_scan_time = current_time
+            logger.info("定期重新扫描日志文件...")
+            self._scan_log_files()
+
+            # 检查是否有不再存在的文件，从列表中移除
+            files_to_remove = []
+            for file_path in self.actual_file_paths:
+                if not os.path.exists(file_path):
+                    files_to_remove.append(file_path)
+                    logger.info(f"日志文件不再存在，从监控列表移除: {file_path}")
+
+            for file_path in files_to_remove:
+                self.actual_file_paths.remove(file_path)
+                if file_path in self.file_positions:
+                    del self.file_positions[file_path]
+
+        # 检查当前文件列表变化
         for file_path in self.actual_file_paths:
             if not os.path.exists(file_path):
                 continue
@@ -120,6 +146,7 @@ class MessageMonitor:
                 # 如果是新文件或文件被重置
                 if file_path not in self.file_positions or current_size < self.file_positions[file_path]:
                     self.file_positions[file_path] = 0
+                    logger.info(f"文件被重置或新添加，从头开始读取: {file_path}")
 
                 # 如果文件有新内容
                 if current_size > self.file_positions[file_path]:
@@ -165,11 +192,15 @@ class MessageMonitor:
                     "收到语音消息" in line or
                     "收到被@消息" in line or  # 添加被@消息类型
                     "收到引用消息" in line or  # 添加引用消息类型
-                    "MsgId" in line):
+                    "MsgId" in line or
+                    "收到链接分享消息" in line):
 
                     # 特别处理图片消息，确保它们被正确识别
                     if "收到图片消息" in line:
                         logger.info(f"发现图片消息行: {line[:100]}...")
+                    # 特别处理链接分享消息，确保它们被正确识别
+                    elif "收到链接分享消息" in line:
+                        logger.info(f"发现链接分享消息行: {line[:100]}...")
 
                     logger.info(f"发现可能的消息行: {line[:100]}...")
 
@@ -430,7 +461,25 @@ class MessageMonitor:
 
                     # 检查是否@了机器人
                     is_at_bot = False
-                    for bot_name in ["小小x", "小x"]:
+                    # 从配置文件中读取机器人名称列表
+                    robot_names = []
+                    try:
+                        # 尝试从配置文件中读取机器人名称
+                        config_file = "dow/config.json"
+                        if os.path.exists(config_file):
+                            with open(config_file, "r", encoding="utf-8") as f:
+                                dow_config = json.load(f)
+                                robot_names = dow_config.get("robot_names", [])
+                                logger.info(f"从配置文件中读取到机器人名称列表: {robot_names}")
+                    except Exception as e:
+                        logger.error(f"读取配置文件中的机器人名称失败: {e}")
+
+                    # 如果配置文件中没有设置或读取失败，使用默认值
+                    if not robot_names:
+                        robot_names = ["小小x", "小x", "机器人"]
+                        logger.info(f"使用默认机器人名称列表: {robot_names}")
+
+                    for bot_name in robot_names:
                         if f"@{bot_name}" in content:
                             is_at_bot = True
                             logger.info(f"检测到@机器人: @{bot_name}")
@@ -504,6 +553,35 @@ class MessageMonitor:
                         msg_source = f'<msgsource><atuserlist>{at_users_str}</atuserlist></msgsource>'
                         msg_data["MsgSource"] = msg_source
 
+                    return msg_data
+
+                # 特殊处理被@消息
+            if "收到链接分享消息" in line:
+                logger.info(f"检测到收到链接分享消息: {line}")
+                url_pattern = re.compile(r'消息ID:(\d+).*?来自:(.*?)[\s\:].*?发送人:(.*?)[\s\:].*?XML:(.*?)(?=$|\n)')
+                url_match = url_pattern.search(line)
+
+                if url_match:
+                    msg_id, from_user, sender, xml_content = url_match.groups()
+                    logger.info(f"成功解析链接分享消息: ID={msg_id}, 发送者={sender}, XML长度={len(xml_content)}")
+
+                    # 创建分享消息数据
+                    msg_data = {
+                        "MsgId": int(msg_id),
+                        "FromUserName": {"string": from_user},
+                        "MsgType": 6,  # SHARING 分享信息
+                        "Content": xml_content,
+                        "FromWxid": from_user,
+                        "SenderWxid": sender,
+                        "RawLogLine": line,  # 保存原始行
+                    }
+
+                    # 尝试从缓存添加发送者昵称
+                    if sender in user_nickname_cache:
+                        msg_data["SenderNickName"] = user_nickname_cache[sender]
+                        logger.info(f"为分享消息添加发送者昵称: {sender} -> {user_nickname_cache[sender]}")
+
+                    logger.info(f"成功从日志提取分享消息数据: ID={msg_id}, 发送者={sender}, 类型=6(分享信息)")
                     return msg_data
 
             # 处理普通消息

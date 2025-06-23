@@ -47,7 +47,21 @@ class LoginMixin(WechatAPIClientBase):
                                            'ProxyPassword': proxy.password,
                                            'ProxyUser': proxy.username}
 
-            response = await session.post(f'http://{self.ip}:{self.port}/api/Login/GetQRx', json=json_param)
+            # 根据协议版本选择不同的API路径
+            import tomllib
+            try:
+                with open("main_config.toml", "rb") as f:
+                    config = tomllib.load(f)
+                protocol_version = config.get("Protocol", {}).get("version", "ipad")
+            except:
+                protocol_version = "ipad"  # 默认版本
+
+            if protocol_version == "Mac":
+                qr_api_path = "/api/Login/GetQRMac"  # Mac版本使用的路径
+            else:
+                qr_api_path = "/api/Login/GetQR"  # 其他版本使用的默认路径
+
+            response = await session.post(f'http://{self.ip}:{self.port}{qr_api_path}', json=json_param)
             json_resp = await response.json()
 
             if json_resp.get("Success"):

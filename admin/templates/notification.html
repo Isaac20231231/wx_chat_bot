@@ -102,6 +102,12 @@
                         </div>
                     </div>
 
+                    <!-- 注意事项 -->
+                    <div class="alert alert-info mt-3">
+                        <i class="bi bi-info-circle-fill me-2"></i>
+                        <strong>提示：</strong>在HTML模板中使用双引号(")时，系统会自动将其转义，您无需手动处理。
+                    </div>
+
                     <!-- 测试区域 -->
                     <div class="mt-4 p-3 bg-light rounded">
                         <div class="d-flex justify-content-between align-items-center">
@@ -181,7 +187,8 @@
 
 {% block extra_js %}
 <!-- 引入Vue.js -->
-<script src="https://cdn.jsdelivr.net/npm/vue@3.2.36/dist/vue.global.min.js"></script>
+<script src="/static/js/lib/vue.global.min.js"></script>
+
 <script>
     const app = Vue.createApp({
         data() {
