@@ -113,8 +113,8 @@ class WXAdapter:
             db_path = os.path.join("database", "contacts.db")
             
             if os.path.exists(db_path):
-                # 每次都创建新的连接，确保线程安全
-                conn = sqlite3.connect(db_path)
+                # 每次都创建新的连接，确保线程安全，设置线程安全模式
+                conn = sqlite3.connect(db_path, check_same_thread=False)
                 cursor = conn.cursor()
 
                 # 查询我的微信号信息
@@ -180,109 +180,239 @@ class WXAdapter:
             logger.info(f"成功刷新好友和群聊缓存 - 好友: {friends_count}个, 群聊: {groups_count}个")
             logger.info(f"好友缓存示例: {list(self.friends_cache.keys())[:5]}")
             logger.info(f"群聊缓存示例: {list(self.groups_cache.keys())[:5]}")
+            
+            # 如果群聊缓存为空，提供调试信息
+            if groups_count == 0:
+                logger.warning("群聊缓存为空，正在检查数据库...")
+                self._debug_group_info()
+                
         except Exception as e:
             logger.error(f"刷新缓存失败: {e}")
-
-    def _update_friends_cache(self):
-        """更新好友缓存，直接从数据库获取"""
-        try:
-            logger.info("开始从数据库更新好友缓存")
             
-            # 直接使用数据库路径创建新连接，避免线程安全问题
+    def _debug_group_info(self):
+        """调试群聊信息，检查数据库中的群聊数据"""
+        try:
             import sqlite3
             db_path = os.path.join("database", "contacts.db")
             
             if os.path.exists(db_path):
-                # 每次都创建新的连接，确保线程安全
-                conn = sqlite3.connect(db_path)
+                conn = sqlite3.connect(db_path, check_same_thread=False)
                 cursor = conn.cursor()
                 
-                # 查询所有非群聊联系人（type != 'group' 和 wxid不包含@chatroom）
+                # 检查所有联系人记录
                 cursor.execute("""
-                SELECT wxid, nickname, remark FROM contacts 
-                WHERE type != 'group' AND wxid NOT LIKE '%@chatroom' 
-                AND wxid IS NOT NULL AND wxid != ''
+                SELECT wxid, nickname, type FROM contacts 
+                WHERE wxid IS NOT NULL AND wxid != ''
+                ORDER BY type, nickname
                 """)
                 
                 rows = cursor.fetchall()
-                count = 0
+                logger.info(f"数据库中总共有 {len(rows)} 条联系人记录")
+                
+                # 分类统计
+                groups = []
+                friends = []
+                others = []
                 
                 for row in rows:
-                    wxid = row[0]
-                    nickname = row[1] or ""
-                    remark = row[2] or ""
-                    
+                    wxid, nickname, contact_type = row
+                    if contact_type == 'group' or '@chatroom' in (wxid or ''):
+                        groups.append((wxid, nickname))
+                    elif contact_type != 'group' and '@chatroom' not in (wxid or ''):
+                        friends.append((wxid, nickname))
+                    else:
+                        others.append((wxid, nickname, contact_type))
+                
+                logger.info(f"群聊数量: {len(groups)}")
+                logger.info(f"好友数量: {len(friends)}")
+                logger.info(f"其他类型: {len(others)}")
+                
+                # 查找"广告群"
+                cursor.execute("""
+                SELECT wxid, nickname, type FROM contacts 
+                WHERE nickname LIKE '%广告%' OR nickname LIKE '%广告群%'
+                """)
+                
+                ad_groups = cursor.fetchall()
+                if ad_groups:
+                    logger.info(f"找到包含'广告'的群聊: {ad_groups}")
+                else:
+                    logger.warning("数据库中没有找到包含'广告'的群聊")
+                
+                # 检查是否有以@chatroom结尾的群聊
+                cursor.execute("""
+                SELECT wxid, nickname, type FROM contacts 
+                WHERE wxid LIKE '%@chatroom'
+                """)
+                
+                chatroom_groups = cursor.fetchall()
+                if chatroom_groups:
+                    logger.info(f"找到 {len(chatroom_groups)} 个@chatroom群聊")
+                    for group in chatroom_groups[:5]:  # 只显示前5个
+                        logger.info(f"  群聊: {group[1]} ({group[0]})")
+                else:
+                    logger.warning("数据库中没有找到@chatroom群聊")
+                
+                conn.close()
+            else:
+                logger.error(f"数据库文件不存在: {db_path}")
+        except Exception as e:
+            logger.error(f"调试群聊信息时发生异常: {e}")
+            
+    def check_group_in_db(self, group_name):
+        """检查指定群聊是否在数据库中，使用标准数据库查询方法"""
+        try:
+            from database.contacts_db import get_all_contacts
+            
+            all_contacts = get_all_contacts()
+            logger.info(f"从数据库获取到 {len(all_contacts)} 个联系人，查找群聊: {group_name}")
+            
+            # 筛选出群聊
+            groups = []
+            for contact in all_contacts:
+                wxid = contact.get("wxid", "")
+                nickname = contact.get("nickname", "")
+                contact_type = contact.get("type", "")
+                
+                # 判断是否为群聊
+                if contact_type == "group" or "@chatroom" in wxid:
+                    groups.append(contact)
+            
+            logger.info(f"数据库中共有 {len(groups)} 个群聊")
+            
+            # 精确匹配
+            for group in groups:
+                if group.get("nickname") == group_name:
+                    logger.info(f"精确匹配到群聊: {group_name} -> {group.get('wxid')}")
+                    return (group.get("wxid"), group.get("nickname"), group.get("type"))
+            
+            # 模糊匹配
+            fuzzy_matches = []
+            for group in groups:
+                nickname = group.get("nickname", "")
+                if group_name in nickname or nickname in group_name:
+                    fuzzy_matches.append(group)
+            
+            if fuzzy_matches:
+                match = fuzzy_matches[0]
+                logger.info(f"模糊匹配到群聊: {group_name} -> {match.get('nickname')} ({match.get('wxid')})")
+                return (match.get("wxid"), match.get("nickname"), match.get("type"))
+            
+            logger.warning(f"数据库中未找到群聊: {group_name}")
+            
+            # 提供调试信息：显示所有群聊名称
+            group_names = [g.get("nickname", "") for g in groups if g.get("nickname")]
+            logger.info(f"数据库中的所有群聊名称: {group_names}")
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"检查群聊时发生异常: {e}")
+            import traceback
+            logger.error(f"错误详情: {traceback.format_exc()}")
+            return None
+
+    def _update_friends_cache(self):
+        """更新好友缓存，使用和后台管理相同的数据库查询方法"""
+        try:
+            logger.info("开始从数据库更新好友缓存（使用标准数据库方法）")
+            
+            # 使用和后台管理相同的数据库查询方法
+            from database.contacts_db import get_all_contacts
+            
+            all_contacts = get_all_contacts()
+            count = 0
+            
+            logger.info(f"从数据库获取到 {len(all_contacts)} 个联系人")
+            
+            # 筛选出非群聊联系人（好友、公众号等）
+            for contact in all_contacts:
+                wxid = contact.get("wxid", "")
+                nickname = contact.get("nickname", "")
+                remark = contact.get("remark", "")
+                contact_type = contact.get("type", "")
+                
+                # 判断是否为非群聊：type不为group 且 wxid不包含@chatroom
+                if contact_type != "group" and "@chatroom" not in wxid:
                     # 添加昵称到缓存
                     if nickname:
                         self.friends_cache[nickname] = wxid
                         count += 1
+                        logger.debug(f"添加好友昵称到缓存: {nickname} -> {wxid}")
                     
                     # 添加备注到缓存
                     if remark and remark != nickname:
                         self.friends_cache[remark] = wxid
                         if not nickname:  # 如果没有昵称，才计数备注
                             count += 1
-                
-                conn.close()
-                logger.info(f"从数据库加载了 {count} 个好友信息")
-                
-                # 记录数据库中的联系人数量
-                if count < 10:  
-                    logger.warning(f"数据库中联系人较少，仅有{count}个，可能需要更新数据库")
-                    
-            else:
-                logger.error(f"联系人数据库文件不存在: {db_path}")
+                        logger.debug(f"添加好友备注到缓存: {remark} -> {wxid}")
+            
+            logger.info(f"从数据库加载了 {count} 个好友信息")
+            
+            # 如果好友数量较少，提供额外信息
+            if count < 10:
+                logger.warning(f"数据库中好友较少，仅有{count}个")
+                # 显示所有非群聊联系人的详细信息
+                non_group_contacts = [c for c in all_contacts if c.get("type", "") != "group" and "@chatroom" not in c.get("wxid", "")]
+                logger.info(f"数据库中非群聊联系人数: {len(non_group_contacts)}")
+                for contact in non_group_contacts[:5]:  # 显示前5个
+                    logger.info(f"  - {contact.get('nickname', '未知')} ({contact.get('wxid', '')}) - 类型: {contact.get('type', '未知')}")
                 
         except Exception as e:
             logger.error(f"从数据库更新好友缓存失败: {e}")
+            import traceback
+            logger.error(f"错误详情: {traceback.format_exc()}")
 
 
 
     def _update_groups_cache(self):
-        """更新群聊缓存，直接从数据库获取"""
+        """更新群聊缓存，使用和后台管理相同的数据库查询方法"""
         try:
-            logger.info("开始从数据库更新群聊缓存")
+            logger.info("开始从数据库更新群聊缓存（使用标准数据库方法）")
             
-            # 直接使用数据库路径创建新连接，避免线程安全问题
-            import sqlite3
-            db_path = os.path.join("database", "contacts.db")
+            # 使用和后台管理相同的数据库查询方法
+            from database.contacts_db import get_all_contacts
             
-            if os.path.exists(db_path):
-                # 每次都创建新的连接，确保线程安全
-                conn = sqlite3.connect(db_path)
-                cursor = conn.cursor()
+            all_contacts = get_all_contacts()
+            count = 0
+            
+            logger.info(f"从数据库获取到 {len(all_contacts)} 个联系人")
+            
+            # 筛选出群聊
+            for contact in all_contacts:
+                wxid = contact.get("wxid", "")
+                nickname = contact.get("nickname", "")
+                contact_type = contact.get("type", "")
                 
-                # 查询所有群聊（type = 'group' 或 wxid包含@chatroom）
-                cursor.execute("""
-                SELECT wxid, nickname FROM contacts 
-                WHERE (type = 'group' OR wxid LIKE '%@chatroom') 
-                AND wxid IS NOT NULL AND wxid != ''
-                AND nickname IS NOT NULL AND nickname != ''
-                """)
-                
-                rows = cursor.fetchall()
-                count = 0
-                
-                for row in rows:
-                    wxid = row[0]
-                    nickname = row[1]
-                    
+                # 判断是否为群聊：type为group 或 wxid包含@chatroom
+                if contact_type == "group" or "@chatroom" in wxid:
                     if wxid and nickname:
                         self.groups_cache[nickname] = wxid
                         count += 1
+                        logger.debug(f"添加群聊到缓存: {nickname} -> {wxid}")
+            
+            logger.info(f"从数据库加载了 {count} 个群聊信息")
+            
+            # 如果群聊数量较少，提供额外信息
+            if count < 5:
+                logger.warning(f"数据库中群聊较少，仅有{count}个")
+                # 显示所有联系人类型的统计
+                type_counts = {}
+                for contact in all_contacts:
+                    contact_type = contact.get("type", "unknown")
+                    type_counts[contact_type] = type_counts.get(contact_type, 0) + 1
+                logger.info(f"数据库中联系人类型统计: {type_counts}")
                 
-                conn.close()
-                logger.info(f"从数据库加载了 {count} 个群聊信息")
-                
-                # 记录数据库中的群聊数量
-                if count < 5:
-                    logger.warning(f"数据库中群聊较少，仅有{count}个，可能需要更新数据库")
-                    
-            else:
-                logger.error(f"联系人数据库文件不存在: {db_path}")
+                # 显示包含@chatroom的联系人
+                chatroom_contacts = [c for c in all_contacts if "@chatroom" in c.get("wxid", "")]
+                logger.info(f"数据库中包含@chatroom的联系人数: {len(chatroom_contacts)}")
+                for contact in chatroom_contacts[:5]:  # 显示前5个
+                    logger.info(f"  - {contact.get('nickname', '未知')} ({contact.get('wxid', '')})")
                 
         except Exception as e:
             logger.error(f"从数据库更新群聊缓存失败: {e}")
+            import traceback
+            logger.error(f"错误详情: {traceback.format_exc()}")
 
     def _update_group_members(self, group_wxid):
         """更新指定群聊的成员缓存，直接从数据库获取"""
@@ -294,8 +424,8 @@ class WXAdapter:
             db_path = os.path.join("database", "contacts.db")
             
             if os.path.exists(db_path):
-                # 每次都创建新的连接，确保线程安全
-                conn = sqlite3.connect(db_path)
+                # 每次都创建新的连接，确保线程安全，设置线程安全模式
+                conn = sqlite3.connect(db_path, check_same_thread=False)
                 cursor = conn.cursor()
                 
                 # 查询群成员信息
@@ -383,53 +513,53 @@ class WXAdapter:
         return None
 
     def _find_friend_wxid_from_db(self, friend_name):
-        """从数据库查找好友wxid"""
+        """从数据库查找好友wxid，使用标准数据库查询方法"""
         try:
-            # 直接使用数据库路径创建新连接，避免线程安全问题
-            import sqlite3
-            db_path = os.path.join("database", "contacts.db")
+            from database.contacts_db import get_all_contacts
             
-            if os.path.exists(db_path):
-                # 每次都创建新的连接，确保线程安全
-                conn = sqlite3.connect(db_path)
-                cursor = conn.cursor()
-
-                # 先尝试精确匹配
-                cursor.execute("""
-                SELECT wxid FROM contacts 
-                WHERE (nickname = ? OR remark = ?) 
-                AND type != 'group' AND wxid NOT LIKE '%@chatroom'
-                """, (friend_name, friend_name))
-
-                row = cursor.fetchone()
-                if row and row[0]:
-                    logger.info(f"从数据库精确匹配到好友: {friend_name}, wxid: {row[0]}")
-                    conn.close()
-                    return row[0]
-
-                # 再尝试模糊匹配
-                cursor.execute("""
-                SELECT wxid, nickname, remark FROM contacts 
-                WHERE (nickname LIKE ? OR remark LIKE ?) 
-                AND type != 'group' AND wxid NOT LIKE '%@chatroom'
-                """, (f"%{friend_name}%", f"%{friend_name}%"))
-
-                rows = cursor.fetchall()
-                if rows and len(rows) > 0:
-                    for row in rows:
-                        if row[0]:
-                            logger.info(f"从数据库模糊匹配到好友: {friend_name} 匹配到 {row[1] or row[2]}, wxid: {row[0]}")
-                            conn.close()
-                            return row[0]
-
-                conn.close()
-                logger.info(f"在数据库中未找到好友 {friend_name}")
-            else:
-                logger.error(f"联系人数据库文件不存在: {db_path}")
+            all_contacts = get_all_contacts()
+            logger.info(f"从数据库获取到 {len(all_contacts)} 个联系人，查找好友: {friend_name}")
+            
+            # 筛选出非群聊联系人
+            friends = []
+            for contact in all_contacts:
+                wxid = contact.get("wxid", "")
+                contact_type = contact.get("type", "")
+                
+                # 判断是否为非群聊
+                if contact_type != "group" and "@chatroom" not in wxid:
+                    friends.append(contact)
+            
+            logger.info(f"数据库中共有 {len(friends)} 个非群聊联系人")
+            
+            # 精确匹配（昵称或备注）
+            for friend in friends:
+                nickname = friend.get("nickname", "")
+                remark = friend.get("remark", "")
+                wxid = friend.get("wxid", "")
+                
+                if nickname == friend_name or remark == friend_name:
+                    logger.info(f"从数据库精确匹配到好友: {friend_name}, wxid: {wxid}")
+                    return wxid
+            
+            # 模糊匹配（昵称或备注）
+            for friend in friends:
+                nickname = friend.get("nickname", "")
+                remark = friend.get("remark", "")
+                wxid = friend.get("wxid", "")
+                
+                if (nickname and friend_name in nickname) or (remark and friend_name in remark):
+                    logger.info(f"从数据库模糊匹配到好友: {friend_name} 匹配到 {nickname or remark}, wxid: {wxid}")
+                    return wxid
+            
+            logger.info(f"在数据库中未找到好友 {friend_name}")
+            return None
+            
         except Exception as e:
             logger.error(f"从数据库查找好友wxid失败: {e}")
-
-        return None
+            import traceback
+            logger.error(f"错误详情: {traceback.format_exc()}")
+            return None
 
     def find_group_wxid(self, group_name):
         """通过群聊名称查找wxid"""
@@ -464,7 +594,25 @@ class WXAdapter:
                 self.groups_cache[group_name] = wxid
                 return wxid
 
+        # 最后尝试直接从数据库查找
+        logger.info(f"缓存中仍未找到群聊 {group_name}，尝试直接从数据库查找")
+        db_result = self.check_group_in_db(group_name)
+        if db_result:
+            wxid, nickname, contact_type = db_result
+            logger.info(f"从数据库找到群聊 {group_name}: {nickname} -> {wxid}")
+            # 添加到缓存
+            self.groups_cache[nickname] = wxid
+            if nickname != group_name:
+                self.groups_cache[group_name] = wxid
+            return wxid
+
         logger.warning(f"未找到群聊 {group_name} 的wxid，所有匹配方法均失败")
+        
+        # 提供调试信息
+        logger.info(f"当前群聊缓存中共有 {len(self.groups_cache)} 个群聊:")
+        for name, wxid in list(self.groups_cache.items())[:10]:  # 显示前10个
+            logger.info(f"  - {name} ({wxid})")
+        
         return None
 
     def find_member_wxid(self, group_wxid, member_name):
@@ -1194,6 +1342,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="消息队列监听器")
     parser.add_argument('--test', action='store_true', help='启用测试模式')
     parser.add_argument('--list', action='store_true', help='列出已缓存的群聊和用户')
+    parser.add_argument('--check', type=str, help='检查指定群聊是否在数据库中')
+    parser.add_argument('--debug', action='store_true', help='显示数据库调试信息')
     parser.add_argument('--group', type=str, help='测试发送的群名称')
     parser.add_argument('--user', type=str, help='测试发送的用户名称')
     parser.add_argument('--message', type=str, help='测试发送的消息内容')
@@ -1203,9 +1353,33 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # 测试模式
-    if args.test or args.list:
+    if args.test or args.list or args.check or args.debug:
         logger.info("启动测试模式")
         wx_adapter = WXAdapter()
+
+        # 显示数据库调试信息
+        if args.debug:
+            logger.info("显示数据库调试信息")
+            wx_adapter._debug_group_info()
+            exit(0)
+
+        # 检查指定群聊是否在数据库中
+        if args.check:
+            logger.info(f"检查群聊 '{args.check}' 是否在数据库中")
+            result = wx_adapter.check_group_in_db(args.check)
+            if result:
+                logger.info(f"找到群聊: {result}")
+                # 同时测试缓存查找
+                logger.info("测试缓存查找功能...")
+                wx_adapter.refresh_cache()
+                cached_wxid = wx_adapter.find_group_wxid(args.check)
+                if cached_wxid:
+                    logger.info(f"缓存查找成功: {args.check} -> {cached_wxid}")
+                else:
+                    logger.warning(f"缓存查找失败: {args.check}")
+            else:
+                logger.warning(f"未找到群聊: {args.check}")
+            exit(0)
 
         # 列出已缓存的群聊和用户
         if args.list:
