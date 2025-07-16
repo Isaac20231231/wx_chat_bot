@@ -654,7 +654,22 @@ class WXAdapter:
         return None
 
     def find_member_wxid(self, group_wxid, member_name):
-        """在指定群聊中查找成员wxid"""
+        """在指定群聊中查找成员wxid - 优先从好友列表匹配"""
+        # 优先从好友列表中查找
+        logger.info(f"优先从好友列表中查找成员 {member_name}")
+        friend_wxid = self.find_friend_wxid(member_name)
+
+        if friend_wxid:
+            logger.info(f"在好友列表中找到 {member_name} 的wxid: {friend_wxid}")
+            # 如果在好友列表中找到，添加到群成员缓存中以便下次快速访问
+            if group_wxid not in self.members_cache:
+                self.members_cache[group_wxid] = {}
+            self.members_cache[group_wxid][member_name] = friend_wxid
+            return friend_wxid
+
+        # 如果好友列表中没有找到，再从群成员中查找
+        logger.info(f"好友列表中未找到 {member_name}，尝试从群 {group_wxid} 成员中查找")
+        
         # 首先检查是否有该群的缓存
         if group_wxid not in self.members_cache:
             logger.info(f"缓存中没有群 {group_wxid} 的成员信息，尝试获取")
@@ -693,16 +708,6 @@ class WXAdapter:
                     logger.info(f"刷新缓存后模糊匹配成功: '{member_name}' 匹配到群成员 '{cache_name}', wxid: {wxid}")
                     self.members_cache[group_wxid][member_name] = wxid
                     return wxid
-
-        # 如果在群成员中找不到，尝试从好友列表中查找
-        logger.info(f"在群 {group_wxid} 成员中未找到 {member_name}，尝试从好友列表查找")
-        friend_wxid = self.find_friend_wxid(member_name)
-
-        if friend_wxid:
-            # 如果在好友列表中找到，添加到群成员缓存中
-            if group_wxid in self.members_cache:
-                self.members_cache[group_wxid][member_name] = friend_wxid
-            return friend_wxid
 
         logger.warning(f"无法找到成员 {member_name} 的wxid，所有匹配方法均失败")
         return None
