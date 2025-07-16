@@ -900,10 +900,6 @@ class WXAdapter:
             响应结果
         """
         try:
-            # 添加API健康检查
-            if not self._check_api_health():
-                logger.error("API服务不可用，无法发送消息")
-                return {"success": False, "error": "API服务不可用"}
 
             # 处理at_list参数
             at_str = ""
@@ -1215,20 +1211,6 @@ class WXAdapter:
         except Exception as e:
             logger.error(f"发送@全体成员消息时发生异常: {e}")
             return {"success": False, "error": str(e)}
-
-    def _check_api_health(self):
-        """检查API服务健康状态"""
-        try:
-            # 简单的健康检查，尝试获取自己的信息
-            url = f'http://{self.api_ip}:{self.api_port}/VXAPI/Login/GetSelf'
-            response = requests.get(url, timeout=5)
-            if response.status_code == 200:
-                result = response.json()
-                return result.get("Success", False)
-            return False
-        except Exception as e:
-            logger.warning(f"API健康检查失败: {e}")
-            return False
 
 
 class MessageConsumer(Thread):
