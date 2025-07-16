@@ -79,7 +79,7 @@ class WXAdapter:
 
         # 设置API服务器地址
         self.api_ip = "127.0.0.1"
-        self.api_port = 9011  # 使用9091端口的API
+        self.api_port = 9011  # 使用9011端口的API
 
         logger.info(f"使用协议版本: {protocol_version}, 使用API服务地址: {self.api_ip}:{self.api_port}")
 
