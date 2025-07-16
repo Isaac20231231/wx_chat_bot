@@ -197,6 +197,9 @@ class WXAdapter:
             logger.info(f"好友缓存示例: {list(self.friends_cache.keys())[:5]}")
             logger.info(f"群聊缓存示例: {list(self.groups_cache.keys())}")
             
+            # 记录缓存状态摘要
+            logger.info(f"缓存统计 - 好友缓存总数: {len(self.friends_cache)}, 群聊缓存总数: {len(self.groups_cache)}")
+            
             # 如果群聊缓存为空，提供调试信息
             if groups_count == 0:
                 logger.warning("群聊缓存为空，正在检查数据库...")
@@ -501,8 +504,21 @@ class WXAdapter:
 
 
 
+    def _ensure_cache_loaded(self):
+        """确保缓存已加载，如果缓存为空则强制加载"""
+        if len(self.friends_cache) == 0 and len(self.groups_cache) == 0:
+            logger.info("检测到缓存为空，强制进行一次缓存加载")
+            try:
+                self.refresh_cache()
+                logger.info("强制缓存加载完成")
+            except Exception as e:
+                logger.error(f"强制缓存加载失败: {e}")
+
     def find_friend_wxid(self, friend_name):
         """通过好友名称查找wxid"""
+        # 确保缓存已加载
+        self._ensure_cache_loaded()
+        
         # 首先从缓存中查找
         if friend_name in self.friends_cache:
             logger.info(f"在缓存中找到好友 {friend_name} 的wxid: {self.friends_cache[friend_name]}")
@@ -600,6 +616,9 @@ class WXAdapter:
 
     def find_group_wxid(self, group_name):
         """通过群聊名称查找wxid"""
+        # 确保缓存已加载
+        self._ensure_cache_loaded()
+        
         # 首先从缓存中查找
         if group_name in self.groups_cache:
             logger.info(f"在缓存中找到群聊 {group_name} 的wxid: {self.groups_cache[group_name]}")
@@ -654,21 +673,21 @@ class WXAdapter:
         return None
 
     def find_member_wxid(self, group_wxid, member_name):
-        """在指定群聊中查找成员wxid - 优先从好友列表匹配"""
+        """在指定群聊中查找成员wxid - 优先从好友列表查找，找不到再查群成员"""
         # 优先从好友列表中查找
-        logger.info(f"优先从好友列表中查找成员 {member_name}")
+        logger.info(f"优先从好友列表查找成员: {member_name}")
         friend_wxid = self.find_friend_wxid(member_name)
 
         if friend_wxid:
             logger.info(f"在好友列表中找到 {member_name} 的wxid: {friend_wxid}")
-            # 如果在好友列表中找到，添加到群成员缓存中以便下次快速访问
+            # 如果在好友列表中找到，也添加到群成员缓存中以备后用
             if group_wxid not in self.members_cache:
                 self.members_cache[group_wxid] = {}
             self.members_cache[group_wxid][member_name] = friend_wxid
             return friend_wxid
 
-        # 如果好友列表中没有找到，再从群成员中查找
-        logger.info(f"好友列表中未找到 {member_name}，尝试从群 {group_wxid} 成员中查找")
+        # 好友列表中没找到，再从群成员中查找
+        logger.info(f"好友列表中未找到 {member_name}，继续在群 {group_wxid} 成员中查找")
         
         # 首先检查是否有该群的缓存
         if group_wxid not in self.members_cache:
@@ -693,7 +712,7 @@ class WXAdapter:
                     return wxid
 
             # 如果找不到，可能是缓存过期，尝试刷新
-            logger.info(f"缓存中未找到群成员 {member_name}，尝试刷新缓存")
+            logger.info(f"缓存中未找到群成员 {member_name}，尝试刷新群成员缓存")
             self._update_group_members(group_wxid)
 
             # 再次尝试精确匹配
@@ -709,7 +728,7 @@ class WXAdapter:
                     self.members_cache[group_wxid][member_name] = wxid
                     return wxid
 
-        logger.warning(f"无法找到成员 {member_name} 的wxid，所有匹配方法均失败")
+        logger.warning(f"无法找到成员 {member_name} 的wxid，好友列表和群成员列表中均未找到")
         return None
 
     async def process_message_async(self, data):
@@ -821,6 +840,11 @@ class WXAdapter:
     def _handle_at_members(self, group_wxid, group_name, content, receiver_names):
         """处理@特定成员"""
         at_wxids = []
+        successful_names = []
+        failed_names = []
+        
+        logger.info(f"开始处理@成员，群聊: {group_name}, 要@的成员: {receiver_names}")
+        
         # 获取接收者的wxid
         for receiver_name in receiver_names:
             if receiver_name in ["所有人", "全体成员", "all"]:
@@ -830,8 +854,13 @@ class WXAdapter:
 
             if member_wxid:
                 at_wxids.append(member_wxid)
+                successful_names.append(receiver_name)
+                logger.info(f"成功获取 {receiver_name} 的wxid: {member_wxid}")
             else:
+                failed_names.append(receiver_name)
                 logger.warning(f"在群 {group_name} 中未找到成员 {receiver_name} 的wxid")
+
+        logger.info(f"@成员处理结果 - 成功: {successful_names}, 失败: {failed_names}, at_wxids数量: {len(at_wxids)}")
 
         # 如果找到了@的对象
         if at_wxids:
@@ -842,10 +871,25 @@ class WXAdapter:
                     at_names.append(f"@{receiver_name}")
 
             at_msg = " ".join(at_names) + " " + content
+            logger.info(f"准备发送@消息: {at_msg[:100]}...")
+            logger.info(f"at_wxids列表: {at_wxids}")
+            
             # 发送@消息，包含at_list
-            result = self.send_message(group_wxid, at_msg, at_wxids)
-            logger.info(f"发送群聊@消息结果: {result}, 群聊: {group_name}, @成员: {receiver_names}, 内容: {content}")
-            return True
+            try:
+                result = self.send_message(group_wxid, at_msg, at_wxids)
+                logger.info(f"发送群聊@消息结果: {result}, 群聊: {group_name}, @成员: {receiver_names}")
+                return True
+            except Exception as e:
+                logger.error(f"发送@消息时出现异常: {e}")
+                import traceback
+                logger.error(f"异常详情: {traceback.format_exc()}")
+                return False
+        else:
+            # 如果没有找到任何@的对象，进行详细分析
+            missing_contacts = [name for name in receiver_names if name not in ["所有人", "全体成员", "all"]]
+            if missing_contacts:
+                logger.warning(f"无法找到要@的联系人: {missing_contacts}，开始详细分析")
+                self.analyze_missing_contacts(missing_contacts)
         return False
         
     def _send_normal_message(self, wxid, name, content, is_image_url):
@@ -905,7 +949,6 @@ class WXAdapter:
             响应结果
         """
         try:
-
             # 处理at_list参数
             at_str = ""
             if at_list:
@@ -1216,6 +1259,8 @@ class WXAdapter:
         except Exception as e:
             logger.error(f"发送@全体成员消息时发生异常: {e}")
             return {"success": False, "error": str(e)}
+
+
 
 
 class MessageConsumer(Thread):
