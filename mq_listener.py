@@ -88,6 +88,10 @@ class WXAdapter:
         self.friends_cache = {}  # 好友wxid缓存
         self.groups_cache = {}  # 群聊wxid缓存
         self.members_cache = {}  # 群成员wxid缓存
+        
+        # 缓存管理相关属性
+        self.cache_last_updated = {}  # 缓存最后更新时间
+        self.cache_expiry_time = 3600  # 缓存过期时间（秒），1小时
 
         # 从数据库直接获取当前登录的微信号
         self.my_wxid = 'wxid_nmoq1pfooveu12'
@@ -100,8 +104,8 @@ class WXAdapter:
         # 延迟加载缓存，避免初始化时线程问题
         logger.info("WXAdapter初始化完成，将在后台异步加载缓存")
 
-        # 启动定时刷新缓存线程，第一次会自动加载缓存
-        self._start_auto_refresh()
+        # 初始化时进行一次缓存加载，后续按需刷新
+        self._initial_cache_load()
 
 
 
@@ -167,11 +171,23 @@ class WXAdapter:
     def refresh_cache(self):
         """刷新好友和群聊缓存"""
         try:
-            # 获取好友列表
-            self._update_friends_cache()
-
-            # 获取群聊列表
-            self._update_groups_cache()
+            # 一次性获取所有联系人数据，避免并发查询冲突
+            logger.info("开始刷新联系人和群聊缓存（使用标准数据库方法）")
+            
+            from database.contacts_db import get_all_contacts
+            
+            # 只查询一次数据库，避免并发冲突
+            all_contacts = get_all_contacts()
+            
+            if not all_contacts:
+                logger.warning("数据库查询返回空结果，跳过缓存更新")
+                return
+            
+            logger.info(f"从数据库获取到 {len(all_contacts)} 个联系人")
+            
+            # 分别更新好友和群聊缓存，传入已获取的数据
+            self._update_friends_cache_with_data(all_contacts)
+            self._update_groups_cache_with_data(all_contacts)
 
             # 记录缓存状态
             friends_count = len(self.friends_cache)
@@ -179,7 +195,7 @@ class WXAdapter:
             
             logger.info(f"成功刷新好友和群聊缓存 - 好友: {friends_count}个, 群聊: {groups_count}个")
             logger.info(f"好友缓存示例: {list(self.friends_cache.keys())[:5]}")
-            logger.info(f"群聊缓存示例: {list(self.groups_cache.keys())[:5]}")
+            logger.info(f"群聊缓存示例: {list(self.groups_cache.keys())}")
             
             # 如果群聊缓存为空，提供调试信息
             if groups_count == 0:
@@ -248,7 +264,7 @@ class WXAdapter:
                 chatroom_groups = cursor.fetchall()
                 if chatroom_groups:
                     logger.info(f"找到 {len(chatroom_groups)} 个@chatroom群聊")
-                    for group in chatroom_groups[:5]:  # 只显示前5个
+                    for group in chatroom_groups:
                         logger.info(f"  群聊: {group[1]} ({group[0]})")
                 else:
                     logger.warning("数据库中没有找到@chatroom群聊")
@@ -312,18 +328,25 @@ class WXAdapter:
             logger.error(f"错误详情: {traceback.format_exc()}")
             return None
 
-    def _update_friends_cache(self):
-        """更新好友缓存，使用和后台管理相同的数据库查询方法"""
+
+
+    def _update_friends_cache_with_data(self, all_contacts):
+        """使用已获取的数据更新好友缓存"""
         try:
-            logger.info("开始从数据库更新好友缓存（使用标准数据库方法）")
+            # 检查缓存是否过期
+            current_time = time.time()
+            last_updated = self.cache_last_updated.get("friends", 0)
             
-            # 使用和后台管理相同的数据库查询方法
-            from database.contacts_db import get_all_contacts
+            if "friends" in self.cache_last_updated and last_updated > 0:
+                time_since_update = current_time - last_updated
+                if time_since_update < self.cache_expiry_time and len(self.friends_cache) > 0:
+                    logger.info(f"好友缓存未过期，跳过更新，当前缓存项数: {len(self.friends_cache)}，距上次更新: {time_since_update:.0f}秒")
+                    return
+                logger.info(f"开始更新好友缓存（距上次更新: {time_since_update:.0f}秒）")
+            else:
+                logger.info("开始更新好友缓存（首次加载）")
             
-            all_contacts = get_all_contacts()
             count = 0
-            
-            logger.info(f"从数据库获取到 {len(all_contacts)} 个联系人")
             
             # 筛选出非群聊联系人（好友、公众号等）
             for contact in all_contacts:
@@ -347,7 +370,9 @@ class WXAdapter:
                             count += 1
                         logger.debug(f"添加好友备注到缓存: {remark} -> {wxid}")
             
-            logger.info(f"从数据库加载了 {count} 个好友信息")
+            # 更新缓存时间戳
+            self.cache_last_updated["friends"] = current_time
+            logger.info(f"更新好友缓存完成，加载了 {count} 个好友信息，缓存将在 {self.cache_expiry_time//60} 分钟后过期")
             
             # 如果好友数量较少，提供额外信息
             if count < 10:
@@ -359,24 +384,27 @@ class WXAdapter:
                     logger.info(f"  - {contact.get('nickname', '未知')} ({contact.get('wxid', '')}) - 类型: {contact.get('type', '未知')}")
                 
         except Exception as e:
-            logger.error(f"从数据库更新好友缓存失败: {e}")
+            logger.error(f"更新好友缓存失败: {e}")
             import traceback
             logger.error(f"错误详情: {traceback.format_exc()}")
 
-
-
-    def _update_groups_cache(self):
-        """更新群聊缓存，使用和后台管理相同的数据库查询方法"""
+    def _update_groups_cache_with_data(self, all_contacts):
+        """使用已获取的数据更新群聊缓存"""
         try:
-            logger.info("开始从数据库更新群聊缓存（使用标准数据库方法）")
+            # 检查缓存是否过期
+            current_time = time.time()
+            last_updated = self.cache_last_updated.get("groups", 0)
             
-            # 使用和后台管理相同的数据库查询方法
-            from database.contacts_db import get_all_contacts
+            if "groups" in self.cache_last_updated and last_updated > 0:
+                time_since_update = current_time - last_updated
+                if time_since_update < self.cache_expiry_time and len(self.groups_cache) > 0:
+                    logger.info(f"群聊缓存未过期，跳过更新，当前缓存项数: {len(self.groups_cache)}，距上次更新: {time_since_update:.0f}秒")
+                    return
+                logger.info(f"开始更新群聊缓存（距上次更新: {time_since_update:.0f}秒）")
+            else:
+                logger.info("开始更新群聊缓存（首次加载）")
             
-            all_contacts = get_all_contacts()
             count = 0
-            
-            logger.info(f"从数据库获取到 {len(all_contacts)} 个联系人")
             
             # 筛选出群聊
             for contact in all_contacts:
@@ -391,7 +419,9 @@ class WXAdapter:
                         count += 1
                         logger.debug(f"添加群聊到缓存: {nickname} -> {wxid}")
             
-            logger.info(f"从数据库加载了 {count} 个群聊信息")
+            # 更新缓存时间戳
+            self.cache_last_updated["groups"] = current_time
+            logger.info(f"更新群聊缓存完成，加载了 {count} 个群聊信息，缓存将在 {self.cache_expiry_time//60} 分钟后过期")
             
             # 如果群聊数量较少，提供额外信息
             if count < 5:
@@ -406,11 +436,11 @@ class WXAdapter:
                 # 显示包含@chatroom的联系人
                 chatroom_contacts = [c for c in all_contacts if "@chatroom" in c.get("wxid", "")]
                 logger.info(f"数据库中包含@chatroom的联系人数: {len(chatroom_contacts)}")
-                for contact in chatroom_contacts[:5]:  # 显示前5个
+                for contact in chatroom_contacts:
                     logger.info(f"  - {contact.get('nickname', '未知')} ({contact.get('wxid', '')})")
                 
         except Exception as e:
-            logger.error(f"从数据库更新群聊缓存失败: {e}")
+            logger.error(f"更新群聊缓存失败: {e}")
             import traceback
             logger.error(f"错误详情: {traceback.format_exc()}")
 
@@ -487,27 +517,34 @@ class WXAdapter:
                 self.friends_cache[friend_name] = wxid
                 return wxid
 
-        # 模糊匹配失败，尝试刷新缓存
-        logger.info(f"模糊匹配失败，尝试刷新好友缓存")
-        self._update_friends_cache()
-
-        # 再次从缓存中查找
-        if friend_name in self.friends_cache:
-            logger.info(f"刷新缓存后找到好友 {friend_name} 的wxid: {self.friends_cache[friend_name]}")
-            return self.friends_cache[friend_name]
-
-        # 再次尝试模糊匹配
-        for cache_name, wxid in self.friends_cache.items():
-            if (friend_name in cache_name) or (cache_name in friend_name):
-                logger.info(f"刷新缓存后模糊匹配成功: '{friend_name}' 匹配到 '{cache_name}', wxid: {wxid}")
-                self.friends_cache[friend_name] = wxid
-                return wxid
-
-        # 尝试从数据库中直接查找
-        db_wxid = self._find_friend_wxid_from_db(friend_name)
-        if db_wxid:
-            self.friends_cache[friend_name] = db_wxid
-            return db_wxid
+        # 模糊匹配失败，尝试即时查询一次数据库（不重试）
+        logger.info(f"缓存中未找到 {friend_name}，尝试即时查询数据库")
+        
+        try:
+            from database.contacts_db import get_all_contacts
+            all_contacts = get_all_contacts()
+            if all_contacts:
+                # 直接在数据中查找
+                for contact in all_contacts:
+                    nickname = contact.get("nickname", "")
+                    remark = contact.get("remark", "")
+                    wxid = contact.get("wxid", "")
+                    contact_type = contact.get("type", "")
+                    
+                    # 判断是否为非群聊
+                    if contact_type != "group" and "@chatroom" not in wxid:
+                        # 精确匹配
+                        if nickname == friend_name or remark == friend_name:
+                            logger.info(f"即时查询找到好友: {friend_name} -> {wxid}")
+                            self.friends_cache[friend_name] = wxid
+                            return wxid
+                        # 模糊匹配
+                        elif (nickname and friend_name in nickname) or (remark and friend_name in remark):
+                            logger.info(f"即时查询模糊匹配到好友: {friend_name} -> {nickname or remark} ({wxid})")
+                            self.friends_cache[friend_name] = wxid
+                            return wxid
+        except Exception as e:
+            logger.warning(f"即时查询数据库失败: {e}")
 
         logger.warning(f"未找到好友 {friend_name} 的wxid，所有匹配方法均失败")
         return None
@@ -578,33 +615,34 @@ class WXAdapter:
                 self.groups_cache[group_name] = wxid
                 return wxid
 
-        # 模糊匹配失败，尝试刷新缓存
-        logger.info(f"模糊匹配失败，尝试刷新群聊缓存")
-        self._update_groups_cache()
-
-        # 再次从缓存中查找
-        if group_name in self.groups_cache:
-            logger.info(f"刷新缓存后找到群聊 {group_name} 的wxid: {self.groups_cache[group_name]}")
-            return self.groups_cache[group_name]
-
-        # 再次尝试模糊匹配
-        for cache_name, wxid in self.groups_cache.items():
-            if (group_name in cache_name) or (cache_name in group_name):
-                logger.info(f"刷新缓存后模糊匹配成功: '{group_name}' 匹配到 '{cache_name}', wxid: {wxid}")
-                self.groups_cache[group_name] = wxid
-                return wxid
-
-        # 最后尝试直接从数据库查找
-        logger.info(f"缓存中仍未找到群聊 {group_name}，尝试直接从数据库查找")
-        db_result = self.check_group_in_db(group_name)
-        if db_result:
-            wxid, nickname, contact_type = db_result
-            logger.info(f"从数据库找到群聊 {group_name}: {nickname} -> {wxid}")
-            # 添加到缓存
-            self.groups_cache[nickname] = wxid
-            if nickname != group_name:
-                self.groups_cache[group_name] = wxid
-            return wxid
+        # 模糊匹配失败，尝试即时查询一次数据库（不重试）
+        logger.info(f"缓存中未找到 {group_name}，尝试即时查询数据库")
+        
+        try:
+            from database.contacts_db import get_all_contacts
+            all_contacts = get_all_contacts()
+            if all_contacts:
+                # 直接在数据中查找群聊
+                for contact in all_contacts:
+                    nickname = contact.get("nickname", "")
+                    wxid = contact.get("wxid", "")
+                    contact_type = contact.get("type", "")
+                    
+                    # 判断是否为群聊
+                    if contact_type == "group" or "@chatroom" in wxid:
+                        # 精确匹配
+                        if nickname == group_name:
+                            logger.info(f"即时查询找到群聊: {group_name} -> {wxid}")
+                            self.groups_cache[nickname] = wxid
+                            return wxid
+                        # 模糊匹配
+                        elif nickname and (group_name in nickname or nickname in group_name):
+                            logger.info(f"即时查询模糊匹配到群聊: {group_name} -> {nickname} ({wxid})")
+                            self.groups_cache[nickname] = wxid
+                            self.groups_cache[group_name] = wxid
+                            return wxid
+        except Exception as e:
+            logger.warning(f"即时查询数据库失败: {e}")
 
         logger.warning(f"未找到群聊 {group_name} 的wxid，所有匹配方法均失败")
         
@@ -669,9 +707,9 @@ class WXAdapter:
         logger.warning(f"无法找到成员 {member_name} 的wxid，所有匹配方法均失败")
         return None
 
-    def process_message(self, data):
+    async def process_message_async(self, data):
         """
-        处理消息队列中的消息
+        异步处理消息队列中的消息
         
         Args:
             data: 原始消息数据，格式为
@@ -682,6 +720,7 @@ class WXAdapter:
                     "time": "2025-03-03 11:20:51"
                 }
         """
+        start_time = time.time()
         try:
             receiver_names = data.get("receiver_name", [])
             content = data.get("message", "")
@@ -697,137 +736,156 @@ class WXAdapter:
                 return
 
             # 判断是否为图片URL消息
-            is_image_url = False
-            if content.startswith(('http://', 'https://')) and any(
-                    content.lower().endswith(ext) for ext in ['.jpg', '.jpeg', '.png', '.gif', '.webp']):
-                is_image_url = True
-                logger.info(f"检测到图片URL消息: {content}")
-            # 如果不是图片扩展名，但URL包含图片相关关键词，也视为图片
-            elif content.startswith(('http://', 'https://')) and any(keyword in content.lower() for keyword in
-                                                                     ['image', 'photo', 'picture', 'img', 'pic', '.jpg',
-                                                                      '.jpeg', '.png', '.gif']):
-                is_image_url = True
-                logger.info(f"检测到可能的图片URL消息: {content}")
+            is_image_url = self._is_image_url(content)
 
             # 判断是群聊消息还是个人消息
             if group_names and any(group_names):
-                # 处理群聊消息
-                for group_name in group_names:
-                    # 从数据库缓存获取群聊wxid
-                    group_wxid = self.find_group_wxid(group_name)
-
-                    if not group_wxid:
-                        logger.error(f"无法找到群聊 {group_name} 的wxid")
-                        continue
-
-                    # 处理@功能
-                    at_wxids = []
-                    if receiver_names and any(receiver_names) and not is_image_url:
-                        # 检查是否@全体成员
-                        if "所有人" in receiver_names or "全体成员" in receiver_names or "all" in receiver_names:
-                            # @全体成员的特殊处理
-                            logger.info(f"检测到@全体成员请求，群聊: {group_name}")
-                            at_msg = "@所有人 " + content
-                            result = self.send_at_all(group_wxid, at_msg)
-                            logger.info(f"发送群聊@全体成员消息结果: {result}, 群聊: {group_name}, 内容: {content}")
-                            continue
-                        else:
-                            # 获取接收者的wxid
-                            for receiver_name in receiver_names:
-                                # 从数据库缓存获取成员wxid
-                                member_wxid = self.find_member_wxid(group_wxid, receiver_name)
-
-                                if member_wxid:
-                                    at_wxids.append(member_wxid)
-                                else:
-                                    logger.warning(f"在群 {group_name} 中未找到成员 {receiver_name} 的wxid")
-
-                            # 如果找到了@的对象
-                            if at_wxids:
-                                # 构造@消息
-                                at_names = []
-                                for receiver_name in receiver_names:
-                                    if receiver_name not in ["所有人", "全体成员", "all"]:  # 防止特殊标记被当作名字@
-                                        at_names.append(f"@{receiver_name}")
-
-                                at_msg = " ".join(at_names) + " " + content
-                                # 发送@消息，包含at_list
-                                result = self.send_message(group_wxid, at_msg, at_wxids)
-                                logger.info(
-                                    f"发送群聊@消息结果: {result}, 群聊: {group_name}, @成员: {receiver_names}, 内容: {content}")
-                                continue
-
-                    # 如果是图片URL消息
-                    if is_image_url:
-                        result = self.send_image_url(group_wxid, content)
-                        logger.info(f"发送群聊图片消息结果: {result}, 群聊: {group_name}, 图片URL: {content}")
-                    else:
-                        # 如果没有@或者@失败，发送普通消息
-                        result = self.send_message(group_wxid, content)
-                        logger.info(f"发送群聊普通消息结果: {result}, 群聊: {group_name}, 内容: {content}")
-
-            # 处理个人消息
+                self._process_group_message(group_names, receiver_names, content, is_image_url)
             elif receiver_names and any(receiver_names):
-                for receiver_name in receiver_names:
-                    # 从数据库缓存获取好友wxid
-                    friend_wxid = self.find_friend_wxid(receiver_name)
-
-                    if not friend_wxid:
-                        logger.error(f"无法找到好友 {receiver_name} 的wxid")
-                        continue
-
-                    # 如果是图片URL消息
-                    if is_image_url:
-                        result = self.send_image_url(friend_wxid, content)
-                        logger.info(f"发送个人图片消息结果: {result}, 接收者: {receiver_name}, 图片URL: {content}")
-                    else:
-                        # 发送个人消息
-                        result = self.send_message(friend_wxid, content)
-                        logger.info(f"发送个人消息结果: {result}, 接收者: {receiver_name}, 内容: {content}")
+                self._process_private_message(receiver_names, content, is_image_url)
             else:
                 logger.error("既没有指定群聊也没有指定好友，无法发送消息")
 
         except Exception as e:
             logger.error(f"处理消息时发生异常: {e}")
+            import traceback
+            logger.error(f"错误详情: {traceback.format_exc()}")
+        finally:
+            end_time = time.time()
+            processing_time = (end_time - start_time) * 1000  # 转换为毫秒
+            logger.info(f"消息处理耗时: {processing_time:.2f}ms")
+            
+    def process_message(self, data):
+        """
+        处理消息队列中的消息，同步接口，内部使用异步处理
+        
+        Args:
+            data: 原始消息数据，格式为字典
+        """
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            return loop.run_until_complete(self.process_message_async(data))
+        finally:
+            loop.close()
+            
+    def _is_image_url(self, content):
+        """判断内容是否为图片URL"""
+        if content.startswith(('http://', 'https://')):
+            if any(content.lower().endswith(ext) for ext in ['.jpg', '.jpeg', '.png', '.gif', '.webp']):
+                logger.info(f"检测到图片URL消息: {content}")
+                return True
+            elif any(keyword in content.lower() for keyword in ['image', 'photo', 'picture', 'img', 'pic', '.jpg', '.jpeg', '.png', '.gif']):
+                logger.info(f"检测到可能的图片URL消息: {content}")
+                return True
+        return False
+        
+    def _process_group_message(self, group_names, receiver_names, content, is_image_url):
+        """处理群聊消息"""
+        for group_name in group_names:
+            # 从数据库缓存获取群聊wxid
+            group_wxid = self.find_group_wxid(group_name)
 
-    def _start_auto_refresh(self):
-        """启动自动刷新缓存的线程"""
+            if not group_wxid:
+                logger.error(f"无法找到群聊 {group_name} 的wxid")
+                continue
 
-        def auto_refresh():
-            # 先等待5秒再进行第一次刷新，确保初始化完成
-            logger.info("缓存刷新线程启动，将在5秒后进行第一次缓存加载")
+            # 处理@功能
+            if receiver_names and any(receiver_names) and not is_image_url:
+                # 检查是否@全体成员
+                if self._handle_at_all_members(group_wxid, group_name, content, receiver_names):
+                    continue
+                # 处理@特定成员
+                if self._handle_at_members(group_wxid, group_name, content, receiver_names):
+                    continue
+
+            # 发送普通消息或图片
+            self._send_normal_message(group_wxid, group_name, content, is_image_url)
+            
+    def _handle_at_all_members(self, group_wxid, group_name, content, receiver_names):
+        """处理@全体成员"""
+        if "所有人" in receiver_names or "全体成员" in receiver_names or "all" in receiver_names:
+            # @全体成员的特殊处理
+            logger.info(f"检测到@全体成员请求，群聊: {group_name}")
+            at_msg = "@所有人 " + content
+            result = self.send_at_all(group_wxid, at_msg)
+            logger.info(f"发送群聊@全体成员消息结果: {result}, 群聊: {group_name}, 内容: {content}")
+            return True
+        return False
+        
+    def _handle_at_members(self, group_wxid, group_name, content, receiver_names):
+        """处理@特定成员"""
+        at_wxids = []
+        # 获取接收者的wxid
+        for receiver_name in receiver_names:
+            if receiver_name in ["所有人", "全体成员", "all"]:
+                continue  # 跳过特殊标记
+            # 从数据库缓存获取成员wxid
+            member_wxid = self.find_member_wxid(group_wxid, receiver_name)
+
+            if member_wxid:
+                at_wxids.append(member_wxid)
+            else:
+                logger.warning(f"在群 {group_name} 中未找到成员 {receiver_name} 的wxid")
+
+        # 如果找到了@的对象
+        if at_wxids:
+            # 构造@消息
+            at_names = []
+            for receiver_name in receiver_names:
+                if receiver_name not in ["所有人", "全体成员", "all"]:  # 防止特殊标记被当作名字@
+                    at_names.append(f"@{receiver_name}")
+
+            at_msg = " ".join(at_names) + " " + content
+            # 发送@消息，包含at_list
+            result = self.send_message(group_wxid, at_msg, at_wxids)
+            logger.info(f"发送群聊@消息结果: {result}, 群聊: {group_name}, @成员: {receiver_names}, 内容: {content}")
+            return True
+        return False
+        
+    def _send_normal_message(self, wxid, name, content, is_image_url):
+        """发送普通消息或图片"""
+        if is_image_url:
+            result = self.send_image_url(wxid, content)
+            logger.info(f"发送图片消息结果: {result}, 接收者: {name}, 图片URL: {content}")
+        else:
+            # 发送普通消息
+            result = self.send_message(wxid, content)
+            logger.info(f"发送普通消息结果: {result}, 接收者: {name}, 内容: {content}")
+            
+    def _process_private_message(self, receiver_names, content, is_image_url):
+        """处理个人消息"""
+        for receiver_name in receiver_names:
+            # 从数据库缓存获取好友wxid
+            friend_wxid = self.find_friend_wxid(receiver_name)
+
+            if not friend_wxid:
+                logger.error(f"无法找到好友 {receiver_name} 的wxid")
+                continue
+
+            # 发送消息
+            self._send_normal_message(friend_wxid, receiver_name, content, is_image_url)
+
+    def _initial_cache_load(self):
+        """初始化时进行一次缓存加载"""
+        
+        def initial_load():
+            # 等待5秒确保初始化完成
+            logger.info("准备进行初始缓存加载，5秒后开始...")
             time.sleep(5)
             
-            # 第一次刷新
             try:
-                logger.info("首次加载：开始刷新联系人和群聊缓存")
+                logger.info("开始初始缓存加载")
                 self.refresh_cache()
-                logger.info("首次加载完成")
+                logger.info("初始缓存加载完成，后续将按需刷新（缓存有效期1小时）")
             except Exception as e:
-                logger.error(f"首次加载缓存时发生异常: {e}")
-            
-            # 定时刷新
-            while True:
-                try:
-                    # 等待10分钟
-                    time.sleep(600)
-                    logger.info("定时任务：开始刷新联系人和群聊缓存")
-                    old_friends_count = len(self.friends_cache)
-                    old_groups_count = len(self.groups_cache)
-                    
-                    self.refresh_cache()
-                    
-                    new_friends_count = len(self.friends_cache)
-                    new_groups_count = len(self.groups_cache)
-                    
-                    logger.info(f"定时任务完成 - 好友: {old_friends_count}->{new_friends_count}, 群聊: {old_groups_count}->{new_groups_count}")
-                except Exception as e:
-                    logger.error(f"自动刷新缓存时发生异常: {e}")
+                logger.error(f"初始缓存加载失败: {e}")
+                logger.info("初始加载失败，将在消息处理时按需加载缓存")
 
-        # 创建并启动线程
-        refresh_thread = Thread(target=auto_refresh, daemon=True)
-        refresh_thread.start()
-        logger.info("已启动定时刷新缓存线程，将在5秒后首次加载，然后每10分钟刷新一次")
+        # 创建并启动一次性线程
+        load_thread = Thread(target=initial_load, daemon=True)
+        load_thread.start()
+        logger.info("已启动初始缓存加载线程，后续采用按需刷新机制")
 
     def send_message(self, to_wxid: str, content: str, at_list=None):
         """
@@ -842,6 +900,11 @@ class WXAdapter:
             响应结果
         """
         try:
+            # 添加API健康检查
+            if not self._check_api_health():
+                logger.error("API服务不可用，无法发送消息")
+                return {"success": False, "error": "API服务不可用"}
+
             # 处理at_list参数
             at_str = ""
             if at_list:
@@ -879,26 +942,31 @@ class WXAdapter:
             url = f'http://{self.api_ip}:{self.api_port}/VXAPI/Msg/SendTxt'
             logger.info(f"发送消息请求: URL={url}, 数据={safe_param}")
 
-            # 发送请求
+            # 改进的重试机制
             max_retries = 3
             retry_count = 0
             success = False
             response = None
+            base_delay = 2  # 基础延迟时间
 
             while retry_count < max_retries and not success:
                 try:
-                    response = requests.post(url, json=json_param, timeout=10)
+                    # 增加超时时间
+                    response = requests.post(url, json=json_param, timeout=15)
                     if response.status_code == 200:
                         success = True
                     else:
                         retry_count += 1
+                        delay = base_delay * (2 ** (retry_count - 1))  # 指数退避
                         logger.warning(
-                            f"API请求失败，状态码: {response.status_code}，重试次数: {retry_count}/{max_retries}")
-                        time.sleep(1)  # 等待1秒后重试
+                            f"API请求失败，状态码: {response.status_code}，重试次数: {retry_count}/{max_retries}，{delay}秒后重试")
+                        time.sleep(delay)
                 except Exception as e:
                     retry_count += 1
-                    logger.warning(f"API请求异常: {e}，重试次数: {retry_count}/{max_retries}")
-                    time.sleep(1)  # 等待1秒后重试
+                    delay = base_delay * (2 ** (retry_count - 1))  # 指数退避
+                    logger.warning(f"API请求异常: {e}，重试次数: {retry_count}/{max_retries}，{delay}秒后重试")
+                    if retry_count < max_retries:
+                        time.sleep(delay)
 
             # 处理响应
             if success and response:
@@ -1148,6 +1216,20 @@ class WXAdapter:
             logger.error(f"发送@全体成员消息时发生异常: {e}")
             return {"success": False, "error": str(e)}
 
+    def _check_api_health(self):
+        """检查API服务健康状态"""
+        try:
+            # 简单的健康检查，尝试获取自己的信息
+            url = f'http://{self.api_ip}:{self.api_port}/VXAPI/Login/GetSelf'
+            response = requests.get(url, timeout=5)
+            if response.status_code == 200:
+                result = response.json()
+                return result.get("Success", False)
+            return False
+        except Exception as e:
+            logger.warning(f"API健康检查失败: {e}")
+            return False
+
 
 class MessageConsumer(Thread):
     """消息队列消费者，负责从MQ接收消息并处理"""
@@ -1176,6 +1258,9 @@ class MessageConsumer(Thread):
         self.channel = None
         self.running = True
         self.daemon = True  # 设置为守护线程，主线程结束时自动结束
+        self.max_retry_interval = 60  # 最大重试间隔（秒）
+        self.retry_interval = 5  # 初始重试间隔（秒）
+        self.retry_count = 0  # 重试计数
         logger.info(f"初始化 MessageConsumer: host={self.host}, port={self.port}, queue={self.queue}")
 
     def connect(self):
@@ -1199,6 +1284,9 @@ class MessageConsumer(Thread):
             # 声明队列
             self.channel.queue_declare(queue=self.queue, durable=True)
             logger.info(f"成功连接到 RabbitMQ 服务器 {self.host}:{self.port}, 队列: {self.queue}")
+            # 连接成功，重置重试参数
+            self.retry_interval = 5
+            self.retry_count = 0
             return True
         except Exception as e:
             logger.error(f"连接 RabbitMQ 失败: {e}, host={self.host}, port={self.port}, queue={self.queue}")
@@ -1210,7 +1298,11 @@ class MessageConsumer(Thread):
             try:
                 if not self.connection or self.connection.is_closed:
                     if not self.connect():
-                        time.sleep(5)  # 连接失败，等待5秒后重试
+                        # 使用指数退避策略
+                        self.retry_count += 1
+                        self.retry_interval = min(self.max_retry_interval, self.retry_interval * 1.5)
+                        logger.warning(f"连接失败，第 {self.retry_count} 次重试，将在 {self.retry_interval:.1f} 秒后重试")
+                        time.sleep(self.retry_interval)
                         continue
 
                 # 设置每次只处理一条消息
@@ -1268,7 +1360,11 @@ class MessageConsumer(Thread):
             except pika.exceptions.AMQPConnectionError as e:
                 logger.error(f"RabbitMQ 连接断开: {e}")
                 self.connection = None
-                time.sleep(5)  # 连接断开，等待5秒后重试
+                # 使用指数退避策略
+                self.retry_count += 1
+                self.retry_interval = min(self.max_retry_interval, self.retry_interval * 1.5)
+                logger.warning(f"连接断开，第 {self.retry_count} 次重试，将在 {self.retry_interval:.1f} 秒后重试")
+                time.sleep(self.retry_interval)
 
     def stop(self):
         """停止消费者线程"""

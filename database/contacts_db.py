@@ -4,54 +4,60 @@ import time
 import sqlite3
 from datetime import datetime
 from loguru import logger
+from threading import Lock
 
 # 数据库文件路径
 DB_PATH = os.path.join("database", "contacts.db")
 
-def ensure_db_dir():
-    """确保数据库目录存在"""
-    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+class DBConnectionPool:
+    """简单的SQLite连接池实现"""
+    def __init__(self, db_path, max_connections=5):
+        self.db_path = db_path
+        self.max_connections = max_connections
+        self.connections = []
+        self.lock = Lock()
+        self.ensure_db_dir()
+        
+    def ensure_db_dir(self):
+        """确保数据库目录存在"""
+        os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
+        
+    def get_connection(self):
+        """获取一个数据库连接"""
+        with self.lock:
+            if self.connections:
+                return self.connections.pop()
+            else:
+                # 创建新连接
+                conn = sqlite3.connect(self.db_path, check_same_thread=False)
+                return conn
+                
+    def release_connection(self, conn):
+        """释放一个数据库连接回池中"""
+        with self.lock:
+            if len(self.connections) < self.max_connections:
+                self.connections.append(conn)
+            else:
+                conn.close()
+                
+    def close_all(self):
+        """关闭所有连接"""
+        with self.lock:
+            for conn in self.connections:
+                conn.close()
+            self.connections = []
 
-def create_contacts_table():
-    """创建联系人表"""
-    ensure_db_dir()
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
+# 创建连接池实例
+db_pool = DBConnectionPool(DB_PATH)
 
-    # 创建联系人表
-    cursor.execute('''
-    CREATE TABLE IF NOT EXISTS contacts (
-        wxid TEXT PRIMARY KEY,
-        nickname TEXT,
-        remark TEXT,
-        avatar TEXT,
-        alias TEXT,
-        type TEXT,
-        region TEXT,
-        last_updated INTEGER,
-        extra_data TEXT
-    )
-    ''')
-
-    conn.commit()
-    conn.close()
-    logger.info("联系人数据表创建完成")
-
+# 修改现有函数使用连接池
 def get_contacts_from_db(offset=None, limit=None):
-    """从数据库获取联系人，支持分页
-
-    Args:
-        offset: 偏移量，从第几条记录开始获取
-        limit: 限制返回的记录数量
-
-    Returns:
-        联系人列表
-    """
-    ensure_db_dir()
+    """从数据库获取联系人，支持分页"""
+    conn = None
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = db_pool.get_connection()
         cursor = conn.cursor()
-
+        
         # 构建查询语句，支持分页
         query = "SELECT * FROM contacts"
         params = []
@@ -103,9 +109,12 @@ def get_contacts_from_db(offset=None, limit=None):
         else:
             logger.info(f"从数据库加载了所有 {len(contacts)} 个联系人")
 
+        db_pool.release_connection(conn)
         return contacts
     except Exception as e:
         logger.error(f"从数据库获取联系人失败: {str(e)}")
+        if conn:
+            db_pool.release_connection(conn)
         return []
 
 def save_contacts_to_db(contacts):
@@ -355,6 +364,42 @@ def get_all_contacts():
     """
     # 直接调用不带分页参数的get_contacts_from_db函数
     return get_contacts_from_db()
+
+# 在init_db函数之前添加以下函数
+
+def ensure_db_dir():
+    """确保数据库目录存在"""
+    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+
+def create_contacts_table():
+    """创建联系人表"""
+    ensure_db_dir()
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    # 创建联系人表
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS contacts (
+        wxid TEXT PRIMARY KEY,
+        nickname TEXT,
+        remark TEXT,
+        avatar TEXT,
+        alias TEXT,
+        type TEXT,
+        region TEXT,
+        last_updated INTEGER,
+        extra_data TEXT
+    )
+    ''')
+
+    # 创建索引以加快查询速度
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_nickname ON contacts (nickname)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_remark ON contacts (remark)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_type ON contacts (type)')
+
+    conn.commit()
+    conn.close()
+    logger.info("联系人数据表创建完成")
 
 # 初始化数据库
 def init_db():
